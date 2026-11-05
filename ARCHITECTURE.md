@@ -516,7 +516,7 @@ forward through change sets marked `source = upgrade`.
 
 ---
 
-## 12. Background jobs and agent workflows
+## 12. Background jobs and workflows
 
 Two kinds of long-running work run outside the request/response path:
 
@@ -556,10 +556,12 @@ tenant:
   field metadata), who may run them, retry and timeout policy, schedule, and
   per-tenant limits. Their logic is either a platform-provided handler or an
   **agent step** (prompt plus allowed tools).
-- **Possible later extension — workflows as metadata:** triggers (e.g. a field
-  changes), conditions, and actions (create or update records, run an agent
-  step, wait for approval), assembled by admins through chat, similar to
-  Salesforce Flow. Whether and when to build this is open (§15).
+- **Workflows are metadata too (decided):** triggers (e.g. a record is
+  created or a field changes, a schedule), conditions, and actions (create or
+  update records, run an agent step, wait for approval, start a job),
+  assembled by admins through chat, similar to Salesforce Flow. Workflow
+  definitions reference objects and fields by stable ID, so they are
+  validated against metadata and migrated on schema changes like views (§10.4).
 - **Rule: tenant-defined jobs never run arbitrary code.** Steps are limited to
   built-in actions and agent steps, and run with the permissions of the user
   who defined or started them.
@@ -618,7 +620,7 @@ the implementation is written from first principles.
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis. |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
-| **M7 — Jobs & agent workflows** | Metadata-driven job types; durable agent workflows; tool trial (§12.3); MCP job tools; optionally workflows as metadata (§12.2). |
+| **M7 — Jobs & agent workflows** | Metadata-driven job types; durable agent workflows; tool trial (§12.3); MCP job tools; workflows as metadata (§12.2). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single
@@ -639,7 +641,7 @@ tenant.
 | 5 | Direct BI tool access (Power BI, Tableau) | Later. |
 | 6 | How long field history and retired fields/objects are kept | **Proposed default:** keep indefinitely; per-tenant retention settings later. Personal-data erasure requests handled by redacting values in history, not deleting history rows. |
 | 7 | Background job system | **Decided:** Postgres-backed, metadata-driven, behind our own interface, also used for agent workflows. **Deferred** to M7; tool chosen by trial then (§12). |
-| 8 | Metadata-driven jobs: job types only, or also workflows (triggers, conditions, actions) as metadata? | Open; decide when the job system is built (§12.2). |
+| 8 | Are workflows metadata-driven too? | **Decided:** yes — triggers, conditions, and actions as metadata (§12.2); built in M7. |
 
 ---
 
