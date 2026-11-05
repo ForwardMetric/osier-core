@@ -1,6 +1,6 @@
 # osier-core — Architecture
 
-> Status: **Draft v0.1** — decisions agreed in planning; open questions in §14.
+> Status: **Draft v0.1** — decisions agreed in planning; open questions in §15.
 > This document is the source of truth for design decisions. Changes to a
 > decision should update this file in the same pull request as the code.
 
@@ -416,6 +416,7 @@ so permission changes do not bump the schema version.
 | `get_field_history` | History for a record or field. |
 | `propose_permission_change` / `apply_permission_change` | Two-phase permission changes. |
 | `save_view` / `open_view` | Save a declarative view spec; open it as an MCP App. |
+| `start_job` / `get_job_status` / `cancel_job` | Run long-running agent workflows and platform jobs (§12). |
 
 Tool schemas are versioned. Clients may pin a version; deprecations come with
 notice.
@@ -472,7 +473,7 @@ include the expected type or allowed values.
 - AI-generated arbitrary code in views is **not** allowed in v1 (security,
   permissions, upgrade safety). A sandboxed custom-HTML option may be added
   later if needed.
-- Host support for MCP Apps varies and must be verified per host (§14).
+- Host support for MCP Apps varies and must be verified per host (§15).
 
 ### 10.5 Our own chat client (later)
 
@@ -515,7 +516,55 @@ forward through change sets marked `source = upgrade`.
 
 ---
 
-## 12. Technology stack
+## 12. Background jobs and agent workflows
+
+Two kinds of long-running work run outside the request/response path:
+
+| Kind | Examples | Needs |
+|---|---|---|
+| **Platform jobs** | Index builds, backfills, type-change migrations, tenant moves, imports | Retries, scheduling, status visible to the user |
+| **Agent workflows** | Multi-step agent tasks: research, bulk data enrichment, document extraction, report generation | Everything above, plus **durable execution** (resume after a crash without repeating completed steps or LLM calls), **pausing for days** for human approval (§10.2), progress reporting, cancellation, cost/time budgets |
+
+### 12.1 Decisions
+
+- **Postgres-backed, no extra broker.** Celery was considered and rejected:
+  its database broker transport is not production-grade (to be verified)
+  and it does not provide durable, step-checkpointed workflows.
+- **Our own interface in the engine** (e.g. `enqueue_job(...)`,
+  `start_workflow(...)`, `get_status(...)`, `cancel(...)`). The underlying
+  tool can be replaced without touching callers.
+- **Every job carries the tenant location and the principal**
+  (`tenant, user, roles, agent_id`). Workers execute with the tenant's
+  database role (§3.1); jobs obey the same permissions as interactive
+  requests, and their writes go through the record service (history,
+  provenance).
+- **One central queue in the control-plane database**, served by a shared
+  worker pool, with **per-tenant concurrency limits and quotas** so one
+  tenant cannot starve others.
+- **Idempotent steps.** Every step that writes data uses an idempotency key,
+  so retries and resumes are safe.
+- **Visible to agents.** Jobs are exposed through MCP tools (start, status,
+  cancel). If the MCP "tasks" mechanism for long-running operations is
+  supported by hosts, use it (to be verified).
+
+### 12.2 Tool choice (to evaluate before M2)
+
+| Candidate | Type | Notes |
+|---|---|---|
+| DBOS | Durable workflow library on Postgres | Step checkpointing, waiting for events, queues. Strong fit for agent workflows. |
+| Procrastinate | Task queue on Postgres | Good fit for platform jobs; no durable multi-step workflows. |
+| Hatchet | Workflow/task orchestration on Postgres | Strong features; runs as a separate service. |
+| Temporal | Durable workflow engine | Most mature, but a separate cluster; likely too heavy for now. |
+
+Selection criteria: durable steps, long waits for events, cancellation,
+per-tenant fairness, operational weight, Python async support, and a license
+compatible with MIT. Prefer **one tool for both kinds** of work. M1 uses a
+minimal implementation behind the interface (enough for index builds and
+backfills).
+
+---
+
+## 13. Technology stack
 
 | Concern | Choice |
 |---|---|
@@ -527,7 +576,7 @@ forward through change sets marked `source = upgrade`.
 | HTTP API | FastAPI |
 | MCP | Official MCP Python SDK |
 | Auth | External OIDC provider supporting MCP authorization (§9) |
-| Background jobs | Postgres-backed job queue (proposed, §14 #7); used for index builds and backfills |
+| Background jobs | Postgres-backed; behind our own interface; tool chosen before M2 (§12) |
 | Tests | pytest against real PostgreSQL (testcontainers or a CI service) |
 | License | MIT |
 
@@ -540,12 +589,12 @@ the implementation is written from first principles.
 
 ---
 
-## 13. Roadmap
+## 14. Roadmap
 
 | Milestone | Scope |
 |---|---|
 | **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. One tenant schema, always addressed by fully qualified names. |
-| **M2 — MCP server** | Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
+| **M2 — MCP server** | Job/workflow tool chosen (§12) and job tools exposed; read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis. |
@@ -557,7 +606,7 @@ tenant.
 
 ---
 
-## 14. Open questions
+## 15. Open questions
 
 | # | Question | Why it matters |
 |---|---|---|
@@ -569,11 +618,11 @@ tenant.
 | 4 | Reporting freshness | Minutes of lag acceptable; not a priority now. |
 | 5 | Direct BI tool access (Power BI, Tableau) | Later. |
 | 6 | How long field history and retired fields/objects are kept | **Proposed default:** keep indefinitely; per-tenant retention settings later. Personal-data erasure requests handled by redacting values in history, not deleting history rows. |
-| 7 | Background job system for long schema changes | **Proposed default:** a Postgres-backed job queue (no extra infrastructure); revisit if load requires. |
+| 7 | Background job system | **Decided:** Postgres-backed, behind our own interface, also used for long-running agent workflows. Tool (DBOS / Procrastinate / Hatchet) chosen in a trial before M2 (§12). |
 
 ---
 
-## 15. Risks and data gaps
+## 16. Risks and data gaps
 
 | Risk | Status / mitigation |
 |---|---|
