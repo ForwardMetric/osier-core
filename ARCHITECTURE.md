@@ -66,8 +66,8 @@ login + chat page is just one more client.
   │  tenants · provisioning · routing · upgrades · backups          │
   └───────────────┬───────────────────────────────┬─────────────────┘
                   │                               │
-        control-plane database          one database per tenant
-                                        (on shared Postgres clusters)
+        control-plane database          tenant schemas: many per shared
+                                        database, or one per dedicated DB
                                                   │
                          later: CDC ─► columnar analytics store
 ```
@@ -79,28 +79,81 @@ and (later) an analytics store.
 
 ## 3. Tenancy model
 
-**Decision: one PostgreSQL database per tenant**, hosted on shared Postgres
-clusters, plus a separate control-plane database.
+**Decision: every tenant lives in its own PostgreSQL schema. A database holds
+one or more tenant schemas.** The control plane records where each tenant is
+and routes requests there.
 
-Rationale:
+| Placement | Database holds | Typical use |
+|---|---|---|
+| **Shared** | Many tenant schemas (up to a configured cap per database) | Free and small tiers |
+| **Dedicated** | Exactly one tenant schema | Paid tiers needing isolation, enterprise |
 
-- Each tenant customizes its own schema, so tenants cannot share tables.
-- **Schema-per-tenant was rejected**: all tenants' tables would share one
-  system catalog (bloat at scale) and `search_path` handling with transaction
-  pooling risks cross-tenant leaks.
-- Database-per-tenant keeps each tenant's catalog small, limits the blast
-  radius of DDL locks to one tenant, and makes backup, restore, export, and
-  deletion of a single tenant straightforward.
+Because a tenant is *always* a schema, both placements run **the same code**.
+Moving a tenant from shared to dedicated is relocating one schema to a new
+database (dump/restore of that schema, or logical replication for minimal
+downtime), followed by a routing switch in the control plane.
 
-Costs we accept (see risks in §15):
+A tenant's location is `(cluster, database, schema)`. The engine receives it
+with every request and never assumes a fixed location.
 
-- Connection pooling is per database; pools must be small and created lazily.
-- Every platform upgrade is applied to N databases (orchestrated, §11).
-- Cost per tenant is higher than with shared tables; free/trial tiers need
-  care (e.g. idle-tenant suspension).
+### 3.1 Safety rules for shared databases
 
-The **control-plane database** holds tenants, plans, cluster placement, schema
-versions per tenant, and upgrade state. It never holds tenant business data.
+Schema-per-tenant has two known failure modes. Both are designed out:
+
+1. **Cross-tenant leaks through `search_path`.** With transaction-mode
+   connection pooling, a session-level `SET search_path` can carry over to the
+   next tenant's transaction on the same server connection. **Rule: the engine
+   never relies on `search_path`.** All SQL is generated with fully qualified
+   names (`"t_7f3a…"."c_loan"`). Hand-written SQL that uses unqualified names
+   is rejected in review and by a test.
+2. **Defense in depth with database roles.** Each tenant schema has its own
+   database role with privileges only on that schema. Each transaction runs
+   `SET LOCAL ROLE <tenant_role>` (transaction-scoped, so safe with pooling).
+   A bug that targets the wrong schema then fails with a permission error
+   instead of reading another tenant's data.
+
+### 3.2 Scaling shared databases
+
+- All tenants' tables in one database share its system catalog. Very large
+  catalogs slow down backups, planning metadata lookups, and per-connection
+  memory. **There is no documented hard limit**; problems at hundreds of
+  thousands of tables are widely reported, but we have no reliable threshold.
+- Therefore each shared database has a **cap on tenant schemas** (initial
+  value to be set from benchmarks in M5). When a database reaches the cap,
+  the control plane places new tenants in a new shared database.
+- Monitor catalog size, `pg_dump` duration, and connection memory per shared
+  database.
+
+### 3.3 Why tenant count is not a blocker now
+
+Starting with one shared database is enough for early growth. Because
+placement is a control-plane decision, scaling means adding databases, not
+changing the design. The open question is only the per-database cap, which
+benchmarks will answer.
+
+### 3.4 Control plane
+
+The **control-plane database** holds organizations, users-to-tenant mapping,
+plans, tenant placement `(cluster, database, schema)`, schema versions per
+tenant, and upgrade state. It never holds tenant business data.
+
+### 3.5 Managed PostgreSQL
+
+We use a managed PostgreSQL provider rather than running servers ourselves.
+Requirements for any provider:
+
+- Full DDL rights, including `CREATE SCHEMA`, `CREATE ROLE`, and
+  `CREATE INDEX CONCURRENTLY`.
+- Logical replication (tenant moves now, analytics later).
+- A connection pooler that supports transaction mode.
+- An API to create databases (for dedicated tenants).
+
+Candidates: **Supabase** (managed Postgres with pooling; we would use it as
+plain Postgres, not its schema-centric API features), **Neon** (serverless,
+scales idle databases to zero — attractive for many dedicated tenants),
+AWS RDS/Aurora, Google Cloud SQL. The engine uses only standard PostgreSQL so
+the provider can be changed. Provider choice for dedicated tenants depends on
+cost per database, which must be checked against current pricing.
 
 ---
 
@@ -328,9 +381,17 @@ so permission changes do not bump the schema version.
 
 ## 9. Identity and authentication
 
-- **We do not build authentication.** An external OIDC provider (self-hosted
-  Keycloak/Authentik or a managed service such as WorkOS/Auth0 — decision
-  open, §14) handles sign-in, SSO, and MFA.
+- **We do not build authentication.** An external OIDC provider handles
+  sign-in, SSO, and MFA.
+- **Start simple:** email + social sign-in from one managed provider. Add
+  enterprise SSO (SAML / OIDC, per customer) later through the same provider.
+- **Hard requirement:** the provider must support the **MCP authorization
+  flow**, so MCP clients such as Claude can sign users in. That means OAuth
+  2.1 with dynamic client registration or client ID metadata documents.
+  Not every identity provider supports this. Verify before choosing.
+  Candidates to check: WorkOS AuthKit, Auth0, Keycloak, Supabase Auth.
+- The engine depends only on standard OIDC claims, so the provider can be
+  replaced.
 - The MCP server uses the **MCP authorization flow (OAuth 2.1)**. The "light
   login page" is this sign-in.
 - Tokens identify the user, the tenant, and the client/agent. The engine
@@ -465,8 +526,8 @@ forward through change sets marked `source = upgrade`.
 | Validation | Pydantic v2 (models generated from metadata) |
 | HTTP API | FastAPI |
 | MCP | Official MCP Python SDK |
-| Auth | External OIDC provider (open, §14) |
-| Background jobs | Open (e.g. a Postgres-backed queue); needed for index builds and backfills |
+| Auth | External OIDC provider supporting MCP authorization (§9) |
+| Background jobs | Postgres-backed job queue (proposed, §14 #7); used for index builds and backfills |
 | Tests | pytest against real PostgreSQL (testcontainers or a CI service) |
 | License | MIT |
 
@@ -483,11 +544,11 @@ the implementation is written from first principles.
 
 | Milestone | Scope |
 |---|---|
-| **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. Single tenant database. |
+| **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. One tenant schema, always addressed by fully qualified names. |
 | **M2 — MCP server** | Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
-| **M5 — Multi-tenancy** | Control plane; provisioning a database per tenant; routing; upgrade orchestration with pre-upgrade analysis. |
+| **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis. |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
@@ -500,14 +561,15 @@ tenant.
 
 | # | Question | Why it matters |
 |---|---|---|
-| 1 | Expected number and size of tenants in years 1 and 3 | Validates database-per-tenant cost and connection-pooling design. |
-| 2 | Identity provider: self-hosted vs managed | Cost, compliance, operational load. |
-| 3 | Which MCP hosts fully support MCP Apps today | Determines whether views work in Claude/ChatGPT or require our own client sooner. |
-| 4 | Reporting freshness requirement (real-time vs minutes) | Determines when the analytics store is needed. |
-| 5 | Direct BI tool access (Power BI, Tableau) needed? | May require read replicas or a warehouse export. |
-| 6 | Retention requirements for history and retired data | Partition policy, purge process. |
-| 7 | Background job system | Needed in M1 for index builds and backfills. |
-| 8 | Target users for early validation of the chat-only experience | The biggest product risk (§15). |
+| # | Question | Status |
+|---|---|---|
+| 1 | Expected number and size of tenants | Unknown. Not a blocker: shared/dedicated placement scales by adding databases (§3.3). |
+| 2 | Identity provider | Start simple with one managed provider that supports MCP authorization; enterprise SSO later (§9). Provider not yet chosen. |
+| 3 | Which MCP hosts fully support MCP Apps today | Later. |
+| 4 | Reporting freshness | Minutes of lag acceptable; not a priority now. |
+| 5 | Direct BI tool access (Power BI, Tableau) | Later. |
+| 6 | How long field history and retired fields/objects are kept | **Proposed default:** keep indefinitely; per-tenant retention settings later. Personal-data erasure requests handled by redacting values in history, not deleting history rows. |
+| 7 | Background job system for long schema changes | **Proposed default:** a Postgres-backed job queue (no extra infrastructure); revisit if load requires. |
 
 ---
 
@@ -516,8 +578,10 @@ tenant.
 | Risk | Status / mitigation |
 |---|---|
 | **Users may not accept a chat-only interface** for repetitive work. | No data yet. Mitigated by AI-built views (M4); validate with target users early. |
-| **Cost per tenant** with database-per-tenant (connections, memory, operations). | No benchmark yet. Small lazy pools, idle-tenant handling; revisit if tenant counts reach thousands of small tenants. |
-| **Upgrade orchestration across N databases.** | Change-set model, ownership rules, pre-upgrade analysis, canaries. |
+| **Too many tenant schemas in one shared database** (catalog size, backups, memory). | No reliable threshold known. Per-database cap set from M5 benchmarks; new shared databases added automatically. |
+| **Cross-tenant access in shared databases.** | Fully qualified names only (no `search_path`), per-tenant database roles with `SET LOCAL ROLE`, isolation tests. |
+| **Cost of dedicated databases.** | Depends on provider pricing (unverified). Offered on paid tiers; providers that scale idle databases to zero reduce cost. |
+| **Upgrade orchestration across many tenant schemas and databases.** | Change-set model, ownership rules, pre-upgrade analysis, canaries. |
 | **Reporting performance** at large row counts. | No benchmark yet. M6 benchmarks; analytics store as planned fallback. |
 | **DDL lock contention** on busy tenants. | `lock_timeout`, retries, background index builds, expand/backfill pattern. |
 | **Prompt injection** through record data or documents. | Two-phase confirmations with unforgeable tokens; AI limited to the user's permissions; no raw SQL. |
