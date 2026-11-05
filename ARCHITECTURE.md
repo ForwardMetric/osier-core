@@ -416,7 +416,7 @@ so permission changes do not bump the schema version.
 | `get_field_history` | History for a record or field. |
 | `propose_permission_change` / `apply_permission_change` | Two-phase permission changes. |
 | `save_view` / `open_view` | Save a declarative view spec; open it as an MCP App. |
-| `start_job` / `get_job_status` / `cancel_job` | Run long-running agent workflows and platform jobs (§12). |
+| `start_job` / `get_job_status` / `cancel_job` | Run long-running agent workflows and platform jobs (§12; later milestone). |
 
 Tool schemas are versioned. Clients may pin a version; deprecations come with
 notice.
@@ -547,7 +547,26 @@ Two kinds of long-running work run outside the request/response path:
   cancel). If the MCP "tasks" mechanism for long-running operations is
   supported by hosts, use it (to be verified).
 
-### 12.2 Tool choice (to evaluate before M2)
+### 12.2 Jobs are metadata-driven
+
+Like objects and fields, jobs are described by metadata, not hard-coded per
+tenant:
+
+- **Job types** are metadata: name, input schema (validated against object and
+  field metadata), who may run them, retry and timeout policy, schedule, and
+  per-tenant limits. Their logic is either a platform-provided handler or an
+  **agent step** (prompt plus allowed tools).
+- **Possible later extension — workflows as metadata:** triggers (e.g. a field
+  changes), conditions, and actions (create or update records, run an agent
+  step, wait for approval), assembled by admins through chat, similar to
+  Salesforce Flow. Whether and when to build this is open (§15).
+- **Rule: tenant-defined jobs never run arbitrary code.** Steps are limited to
+  built-in actions and agent steps, and run with the permissions of the user
+  who defined or started them.
+- Job definitions follow the same propose → validate → confirm → apply
+  lifecycle as schema changes (§5) and are versioned.
+
+### 12.3 Tool choice (deferred)
 
 | Candidate | Type | Notes |
 |---|---|---|
@@ -558,7 +577,7 @@ Two kinds of long-running work run outside the request/response path:
 
 Selection criteria: durable steps, long waits for events, cancellation,
 per-tenant fairness, operational weight, Python async support, and a license
-compatible with MIT. Prefer **one tool for both kinds** of work. M1 uses a
+compatible with MIT. Prefer **one tool for both kinds** of work. **Deferred:** the full job system is built in M7. Until then, M1 uses a
 minimal implementation behind the interface (enough for index builds and
 backfills).
 
@@ -594,11 +613,12 @@ the implementation is written from first principles.
 | Milestone | Scope |
 |---|---|
 | **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. One tenant schema, always addressed by fully qualified names. |
-| **M2 — MCP server** | Job/workflow tool chosen (§12) and job tools exposed; read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
+| **M2 — MCP server** | Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis. |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
+| **M7 — Jobs & agent workflows** | Metadata-driven job types; durable agent workflows; tool trial (§12.3); MCP job tools; optionally workflows as metadata (§12.2). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single
@@ -618,7 +638,8 @@ tenant.
 | 4 | Reporting freshness | Minutes of lag acceptable; not a priority now. |
 | 5 | Direct BI tool access (Power BI, Tableau) | Later. |
 | 6 | How long field history and retired fields/objects are kept | **Proposed default:** keep indefinitely; per-tenant retention settings later. Personal-data erasure requests handled by redacting values in history, not deleting history rows. |
-| 7 | Background job system | **Decided:** Postgres-backed, behind our own interface, also used for long-running agent workflows. Tool (DBOS / Procrastinate / Hatchet) chosen in a trial before M2 (§12). |
+| 7 | Background job system | **Decided:** Postgres-backed, metadata-driven, behind our own interface, also used for agent workflows. **Deferred** to M7; tool chosen by trial then (§12). |
+| 8 | Metadata-driven jobs: job types only, or also workflows (triggers, conditions, actions) as metadata? | Open; decide when the job system is built (§12.2). |
 
 ---
 
