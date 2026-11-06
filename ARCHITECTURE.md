@@ -196,7 +196,14 @@ EspoCRM all compile metadata to real tables.
   (`c_net_worth_statement`, `c_region`). Platform upgrades can therefore add
   standard fields without colliding with tenant customizations.
 
-### 4.3 Field types (initial set)
+### 4.3 Field limit
+
+Each object may have at most **500 fields** (configurable later). Retired
+fields count towards the limit because their columns and data are kept.
+PostgreSQL's hard limit is 1,600 columns per table. A permanent purge of
+retired columns (respecting retention) is future work.
+
+### 4.4 Field types (initial set)
 
 `text`, `long_text`, `integer`, `decimal(precision, scale)`, `currency`,
 `boolean`, `date`, `datetime`, `email`, `phone`, `url`, `picklist`,
@@ -207,7 +214,7 @@ Every type maps to a fixed PostgreSQL column type and a validator (§6.1).
 Domain types such as `email` are validated in the engine *and* backed by a
 `CHECK` constraint where practical.
 
-### 4.4 Relationships and integrity
+### 4.5 Relationships and integrity
 
 - A **lookup** is a real foreign key column. Delete behavior from metadata maps
   to the real FK action (`ON DELETE RESTRICT | CASCADE | SET NULL`).
@@ -218,7 +225,7 @@ Domain types such as `email` are validated in the engine *and* backed by a
 Because these are real constraints, integrity holds even if application code
 has a bug.
 
-### 4.5 Standard system columns (every object table)
+### 4.6 Standard system columns (every object table)
 
 `id` (UUID, primary key), `created_at`, `created_by`, `updated_at`,
 `updated_by`, `owner_id` (for record-level access, §8), `row_version` (for
@@ -279,7 +286,7 @@ upgrade, go through **change sets**.
 - For each object and schema version, the engine generates a **Pydantic v2
   model** from metadata and caches it keyed by `(tenant, object, schema_version)`.
 - Validation happens in the engine before SQL is executed. The database
-  constraints (§4.4) are the backstop.
+  constraints (§4.5) are the backstop.
 - Writes use **optimistic concurrency** (`row_version`) and accept an
   **idempotency key** so agent retries do not create duplicates.
 

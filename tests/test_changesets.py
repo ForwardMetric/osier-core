@@ -314,3 +314,32 @@ def test_agent_proposals_are_attributed(agent):
         (proposal.id,),
     ).fetchone()
     assert row == (AGENT.user_id, "agent", "test-agent")
+
+
+def test_field_limit(crm, monkeypatch):
+    from osier import changesets
+
+    current = len(crm.snapshot().get_object("account").fields)
+    monkeypatch.setattr(changesets, "MAX_FIELDS_PER_OBJECT", current + 1)
+    apply(
+        crm,
+        [
+            {
+                "op": "add_field",
+                "object": "account",
+                "field": {"api_name": "c_one", "label": "One", "type": "text"},
+            }
+        ],
+    )
+    apply(crm, [{"op": "retire_field", "object": "account", "field": "c_one"}])
+    with pytest.raises(SchemaChangeError) as exc:  # retired fields still count
+        crm.schema.propose(
+            [
+                {
+                    "op": "add_field",
+                    "object": "account",
+                    "field": {"api_name": "c_two", "label": "Two", "type": "text"},
+                }
+            ]
+        )
+    assert exc.value.code == "FIELD_LIMIT_REACHED"

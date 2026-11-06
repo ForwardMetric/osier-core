@@ -36,6 +36,10 @@ from .metadata import MetadataRegistry, SchemaSnapshot
 LOCK_TIMEOUT = "5s"
 STATEMENT_TIMEOUT = "60s"
 
+# Retired fields keep their columns, so they count towards the limit. PostgreSQL's hard
+# limit is 1600 columns per table; this leaves ample headroom for system columns.
+MAX_FIELDS_PER_OBJECT = 500
+
 # --------------------------------------------------------------------------------------
 # Operations (the only input format for schema changes)
 # --------------------------------------------------------------------------------------
@@ -370,6 +374,13 @@ class _Planner:
         if spec.default is not None:
             default = _validate_default(ftype, options, spec.default, where)
 
+        if len(obj.fields) >= MAX_FIELDS_PER_OBJECT:
+            raise SchemaChangeError(
+                f"{where}: {obj.api_name!r} has reached the limit of {MAX_FIELDS_PER_OBJECT} "
+                "fields (retired fields count, because their data is kept).",
+                code="FIELD_LIMIT_REACHED",
+                hint="Consider a related custom object for this group of fields.",
+            )
         position = max((f.position for f in obj.fields.values()), default=0) + 1
         return _WField(
             id=self._id("field", obj.api_name, name),
