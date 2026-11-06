@@ -591,7 +591,7 @@ backfills).
 |---|---|
 | Language | Python 3.12+ |
 | Database | PostgreSQL 16+ |
-| SQL layer | SQLAlchemy 2.x Core (not ORM for dynamic objects), psycopg 3 |
+| SQL layer | psycopg 3 with `psycopg.sql` composition. (SQLAlchemy Core was planned; M1 uses `psycopg.sql` directly because dynamic identifiers are simpler and safer to compose there. Revisit if a need appears.) |
 | Platform migrations | Alembic |
 | Validation | Pydantic v2 (models generated from metadata) |
 | HTTP API | FastAPI |
