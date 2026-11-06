@@ -1,15 +1,19 @@
 import psycopg
 import pytest
-from conftest import ADMIN
+from conftest import fld
 
-from osier import Session, drop_tenant, provision_tenant, standard
+from osier import Session, bootstrap_tenant, drop_tenant
 
 
 def test_tenants_have_independent_schemas(conn, crm):
-    other_tenant = provision_tenant(conn)
+    other_boot = bootstrap_tenant(
+        conn, organization_name="Other", admin_email="o@other.test", admin_display_name="O"
+    )
+    other_tenant = other_boot.tenant
     try:
-        other = Session(conn, other_tenant, ADMIN)
-        standard.install(other)
+        other = Session(conn, other_tenant, other_boot.admin)
+        p = other.packages.propose_install(["crm"])
+        other.packages.apply(p.id, diff_hash=p.diff_hash)
         crm.records.create("account", {"name": "Tenant A only"})
         assert other.records.list("account") == []
 
@@ -18,7 +22,7 @@ def test_tenants_have_independent_schemas(conn, crm):
                 {
                     "op": "add_field",
                     "object": "account",
-                    "field": {"api_name": "c_region", "label": "Region", "type": "text"},
+                    "field": fld("c_region", "text"),
                 }
             ]
         )
@@ -35,8 +39,8 @@ def test_session_disables_search_path(crm):
         crm.conn.execute("SELECT * FROM account")
 
 
-def test_connection_must_be_autocommit(tenant):
+def test_connection_must_be_autocommit(tenant, admin):
     from conftest import DATABASE_URL
 
     with psycopg.connect(DATABASE_URL) as c, pytest.raises(ValueError):
-        Session(c, tenant, ADMIN)
+        Session(c, tenant, admin)

@@ -24,6 +24,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from .context import Principal, Tenant
 from .errors import (
+    ApprovalError,
     ConflictError,
     IntegrityError,
     NotFoundError,
@@ -226,6 +227,11 @@ class RecordService:
             f = _field_for_constraint(obj, diag.constraint_name)
             if f is not None:
                 return _unique_error(obj, f)
+            if diag.constraint_name.startswith("uq_"):
+                return IntegrityError(
+                    "Another record already has this combination of values.",
+                    code="UNIQUE_VIOLATION",
+                )
         if isinstance(exc, pg_errors.ForeignKeyViolation):
             return IntegrityError(
                 "A lookup refers to a record that does not exist.", code="LOOKUP_TARGET_NOT_FOUND"
@@ -342,6 +348,39 @@ class RecordService:
                 details={"errors": [e["msg"] for e in exc.errors(include_url=False)]},
             ) from None
 
+    def _guard_protected(self, obj: ObjectDef) -> None:
+        if obj.protected and not (
+            self._principal.is_human or self._principal.actor_type.value == "system"
+        ):
+            raise ApprovalError(
+                f"{obj.label} records control access and can only be changed by a person.",
+                code="AGENT_WRITE_NOT_ALLOWED",
+                hint="Ask the user to make this change, or propose it for their approval.",
+            )
+
+    def _check_unique_together(
+        self,
+        snapshot: SchemaSnapshot,
+        obj: ObjectDef,
+        merged: dict[str, Any],
+        exclude_id: uuid.UUID | None = None,
+    ) -> None:
+        for combo in obj.unique_together:
+            values = [merged.get(f.api_name) for f in combo]
+            if any(v is None for v in values):
+                continue  # NULLs never conflict in a unique index
+            conditions = sql.SQL(" AND ").join(
+                sql.SQL("{} = %s").format(sql.Identifier(f.api_name)) for f in combo
+            )
+            query = sql.SQL("SELECT id FROM {} WHERE ").format(snapshot.table(obj)) + conditions
+            params: list[Any] = list(values)
+            if exclude_id is not None:
+                query += sql.SQL(" AND id <> %s")
+                params.append(exclude_id)
+            row = self._conn.execute(query + sql.SQL(" LIMIT 1"), params).fetchone()
+            if row is not None:
+                raise _unique_together_error(obj, combo, row[0])
+
     # ---- public API ----------------------------------------------------------------
 
     def create(
@@ -355,6 +394,7 @@ class RecordService:
     ) -> dict[str, Any]:
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
+        self._guard_protected(obj)
         prov = self._provenance(provenance)
         data = self._validate(snapshot, obj, values, "create")
         owner_id = (
@@ -370,6 +410,7 @@ class RecordService:
                         return self._output(obj, self._fetch(snapshot, obj, existing))
                 self._check_lookups(snapshot, obj, data)
                 self._check_unique(snapshot, obj, data)
+                self._check_unique_together(snapshot, obj, data)
                 columns = [*data, "created_by", "updated_by", "owner_id"]
                 params = [
                     *data.values(),
@@ -507,6 +548,7 @@ class RecordService:
     ) -> dict[str, Any]:
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
+        self._guard_protected(obj)
         prov = self._provenance(provenance)
         data = self._validate(snapshot, obj, values, "update")
         if not data:
@@ -532,6 +574,9 @@ class RecordService:
                     return self._output(obj, current)
                 self._check_lookups(snapshot, obj, changed)
                 self._check_unique(snapshot, obj, changed, exclude_id=current["id"])
+                self._check_unique_together(
+                    snapshot, obj, {**current, **changed}, exclude_id=current["id"]
+                )
                 assignments = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in changed] + [
                     sql.SQL("updated_at = now()"),
                     sql.SQL("updated_by = %s"),
@@ -562,6 +607,7 @@ class RecordService:
         """Soft-delete a record, applying each incoming lookup's on_delete rule."""
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
+        self._guard_protected(obj)
         report: dict[str, list[Any]] = {"retired": [], "cleared": []}
         try:
             with self._conn.transaction():
@@ -712,6 +758,19 @@ def _unique_error(obj: ObjectDef, f: FieldDef, existing_id: Any = None) -> Integ
         field=f.api_name,
         details={"existing_record_id": str(existing_id)} if existing_id else {},
         hint="Use a different value, or update the existing record instead.",
+    )
+
+
+def _unique_together_error(
+    obj: ObjectDef, combo: list[FieldDef], existing_id: Any
+) -> IntegrityError:
+    names = [f.api_name for f in combo]
+    return IntegrityError(
+        f"Another {obj.api_name!r} record already has this combination of {names}.",
+        code="UNIQUE_VIOLATION",
+        field=",".join(names),
+        details={"fields": names, "existing_record_id": str(existing_id)},
+        hint="Use a different combination, or update the existing record instead.",
     )
 
 

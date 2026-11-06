@@ -36,6 +36,7 @@ class FieldDef:
     status: str
     index_status: str | None
     position: int
+    semantic_ref: str | None = None
 
     @property
     def active(self) -> bool:
@@ -65,6 +66,19 @@ class ObjectDef:
     owner: Owner
     status: str
     fields: dict[str, FieldDef]  # all fields, including retired, keyed by api_name
+    semantic_ref: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+    package: str | None = None
+
+    @property
+    def protected(self) -> bool:
+        """Security-sensitive objects (users, roles): agents may not write them."""
+        return bool(self.options.get("protected"))
+
+    @cached_property
+    def unique_together(self) -> list[list[FieldDef]]:
+        by_id = {str(f.id): f for f in self.fields.values()}
+        return [[by_id[i] for i in combo] for combo in self.options.get("unique_together", [])]
 
     @property
     def active(self) -> bool:
@@ -129,6 +143,8 @@ class SchemaSnapshot:
                 entry: dict[str, Any] = {
                     "api_name": f.api_name,
                     "label": f.label,
+                    "description": f.description,
+                    "semantic_ref": f.semantic_ref,
                     "type": f.type.value,
                     "required": f.required,
                     "unique": f.unique,
@@ -151,7 +167,13 @@ class SchemaSnapshot:
                     "label": obj.label,
                     "plural_label": obj.plural_label,
                     "owner": obj.owner.value,
+                    "package": obj.package,
                     "description": obj.description,
+                    "semantic_ref": obj.semantic_ref,
+                    "protected": obj.protected,
+                    "unique_together": [
+                        [f.api_name for f in combo] for combo in obj.unique_together
+                    ],
                     "fields": fields,
                 }
             )
@@ -229,6 +251,7 @@ class MetadataRegistry:
                 status=r["status"],
                 index_status=r["index_status"],
                 position=r["position"],
+                semantic_ref=r["semantic_ref"],
             )
         objects = {
             r["api_name"]: ObjectDef(
@@ -240,6 +263,9 @@ class MetadataRegistry:
                 owner=Owner(r["owner"]),
                 status=r["status"],
                 fields=fields_by_object.get(r["id"], {}),
+                semantic_ref=r["semantic_ref"],
+                options=r["options"],
+                package=r["package"],
             )
             for r in objects_rows
         }

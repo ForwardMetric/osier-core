@@ -23,7 +23,13 @@ Implemented:
   - optimistic concurrency (`row_version`), idempotency keys
   - lookup integrity; retire with `restrict` / `cascade` / `set_null`
   - field history (opt-in per field) with actor, agent, request id, provenance
-- Standard objects: Account, Contact, Opportunity
+- Design rules: every object and field must be documented; generic names rejected;
+  schema.org `semantic_ref` links; advice for tenant proposals
+- Packages (standard objects as plugins), installed by human-approved change sets:
+  - `core` (always installed): Organization, User, Role, Role Assignment
+  - `crm`: Account, Contact, Lead, Opportunity, Activity
+  - `case_management`: Case, Case Comment
+- `bootstrap_tenant`: new tenant with core package, organization, and first administrator
 
 Not yet (see roadmap in ARCHITECTURE.md): MCP server, permissions, confirmation
 tokens, views, multi-database placement, reporting, jobs and workflows.
@@ -37,34 +43,28 @@ uv run pytest -q
 ```
 
 ```python
-import uuid, psycopg
-from osier import Principal, Session, provision_tenant, standard
+import psycopg
+from osier import Session, bootstrap_tenant
 
 conn = psycopg.connect("postgresql://osier:osier@localhost:5432/osier_test", autocommit=True)
-tenant = provision_tenant(conn)
-admin = Session(conn, tenant, Principal(user_id=uuid.uuid4()))
-standard.install(admin)
+boot = bootstrap_tenant(conn, organization_name="Acme Lending",
+                        admin_email="ada@acme.test", admin_display_name="Ada Lovelace")
+admin = Session(conn, boot.tenant, boot.admin)
 
-proposal = admin.schema.propose(
-    [
-        {
-            "op": "add_field",
-            "object": "account",
-            "field": {
-                "api_name": "c_region",
-                "label": "Region",
-                "type": "picklist",
-                "options": {"values": ["emea", "amer", "apac"]},
-            },
-        },
-    ]
-)
-print(proposal.summary, proposal.ddl, proposal.blockers)
+install = admin.packages.propose_install(["case_management"])  # adds crm automatically
+admin.packages.apply(install.id, diff_hash=install.diff_hash)
+
+proposal = admin.schema.propose([
+    {"op": "add_field", "object": "account",
+     "field": {"api_name": "c_region", "label": "Sales Region", "type": "picklist",
+               "description": "Sales region responsible for the account, used for territory reporting.",
+               "options": {"values": ["emea", "amer", "apac"]}}},
+])
+print(proposal.summary, proposal.ddl, proposal.blockers, proposal.impact)
 admin.schema.apply(proposal.id, diff_hash=proposal.diff_hash)
 
 acme = admin.records.create("account", {"name": "Acme", "c_region": "emea"})
 ```
-
 ## License
 
 MIT

@@ -45,6 +45,7 @@ ENGINE_TABLES = frozenset(
         "meta_objects",
         "meta_fields",
         "meta_change_sets",
+        "meta_packages",
         "meta_idempotency",
         "field_history",
         "field_history_default",

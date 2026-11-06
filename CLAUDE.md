@@ -20,8 +20,10 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/changesets.py` — schema change sets: propose / validate / impact / apply
 - `src/osier/records.py` — record create / read / update / retire, history, provenance
 - `src/osier/session.py` — tenant + principal scoped entry point
-- `src/osier/standard.py` — standard objects package
+- `src/osier/design.py` — design rules: required documentation, naming quality, ontology refs
+- `src/osier/packages/` — installable standard-object packages (core, crm, case_management)
 - `src/osier/tenant.py` — tenant schema provisioning
+- `src/osier/bootstrap.py` — new tenant with core package, organization, first admin
 
 ## Rules
 
@@ -45,3 +47,9 @@ uv run ruff check . && uv run ruff format --check .
    projects under incompatible licenses (e.g. Directus, Twenty, Baserow
    premium/enterprise, NocoDB). Ideas and public documentation are fine.
 9. Do not put AI model identifiers in commits, code, or docs.
+10. **Document everything you add to a schema.** Objects and fields need real
+    descriptions (the engine enforces it) and a schema.org `semantic_ref` where a
+    matching term exists. Never invent ontology URIs.
+11. **Packages are metadata only.** Standard objects are added or changed by
+    editing a package in `src/osier/packages/` and bumping its version, never by
+    hand-written change sets.

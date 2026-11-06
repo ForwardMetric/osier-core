@@ -3,10 +3,11 @@ import uuid
 
 import psycopg
 import pytest
-from conftest import ADMIN, AGENT, DATABASE_URL, HUMAN_FOR_AGENT, apply
+from conftest import AGENT, DATABASE_URL, HUMAN_FOR_AGENT, apply, fld, obj
 
 from osier import Session
 from osier.errors import (
+    ApprovalError,
     ConflictError,
     IntegrityError,
     NotFoundError,
@@ -19,11 +20,11 @@ def acme(crm):
     return crm.records.create("account", {"name": "Acme", "industry": "technology"})
 
 
-def test_create_and_get(crm, acme):
+def test_create_and_get(crm, acme, admin):
     assert acme["name"] == "Acme"
     assert acme["row_version"] == 1
-    assert acme["created_by"] == str(ADMIN.user_id)
-    assert acme["owner_id"] == str(ADMIN.user_id)
+    assert acme["created_by"] == str(admin.user_id)
+    assert acme["owner_id"] == str(admin.user_id)
     assert crm.records.get("account", acme["id"])["industry"] == "technology"
 
 
@@ -74,17 +75,17 @@ def test_email_and_datetime_types(crm):
             {
                 "op": "add_field",
                 "object": "contact",
-                "field": {"api_name": "c_last_call", "label": "Last call", "type": "datetime"},
+                "field": fld("c_last_call", "datetime"),
             }
         ],
     )
     with pytest.raises(RecordValidationError):
-        crm.records.create("contact", {"last_name": "Doe", "email": "not-an-email"})
+        crm.records.create("contact", {"family_name": "Doe", "email": "not-an-email"})
     with pytest.raises(RecordValidationError):  # time zone required
-        crm.records.create("contact", {"last_name": "Doe", "c_last_call": "2026-01-01T09:00:00"})
+        crm.records.create("contact", {"family_name": "Doe", "c_last_call": "2026-01-01T09:00:00"})
     contact = crm.records.create(
         "contact",
-        {"last_name": "Doe", "email": "jane@example.com", "c_last_call": "2026-01-01T09:00:00Z"},
+        {"family_name": "Doe", "email": "jane@example.com", "c_last_call": "2026-01-01T09:00:00Z"},
     )
     assert contact["c_last_call"].startswith("2026-01-01T09:00:00")
 
@@ -172,7 +173,7 @@ def test_unique_violation_is_reported_on_the_field(crm):
             {
                 "op": "add_field",
                 "object": "account",
-                "field": {"api_name": "c_code", "label": "Code", "type": "text", "unique": True},
+                "field": fld("c_code", "text", unique=True),
             }
         ],
     )
@@ -204,7 +205,7 @@ def test_list_with_filters(crm):
 
 
 def test_retire_cascade_and_set_null(crm, acme):
-    contact = crm.records.create("contact", {"last_name": "Doe", "account": acme["id"]})
+    contact = crm.records.create("contact", {"family_name": "Doe", "account": acme["id"]})
     opp = crm.records.create(
         "opportunity", {"name": "Deal", "account": acme["id"], "close_date": "2026-01-01"}
     )
@@ -223,19 +224,17 @@ def test_retire_restrict_blocks(crm, acme):
     apply(
         crm,
         [
-            {
-                "op": "create_object",
-                "api_name": "c_loan",
-                "label": "Loan",
-                "fields": [
-                    {
-                        "api_name": "c_borrower",
-                        "label": "Borrower",
-                        "type": "lookup",
-                        "options": {"target": "account", "on_delete": "restrict"},
-                    }
+            obj(
+                "c_loan",
+                "Loan",
+                [
+                    fld(
+                        "c_borrower",
+                        "lookup",
+                        options={"target": "account", "on_delete": "restrict"},
+                    )
                 ],
-            },
+            )
         ],
     )
     crm.records.create("c_loan", {"c_borrower": acme["id"]})
@@ -259,7 +258,7 @@ def test_retired_fields_are_hidden_and_rejected(crm, acme):
             {
                 "op": "add_field",
                 "object": "account",
-                "field": {"api_name": "c_old", "label": "Old", "type": "text"},
+                "field": fld("c_old", "text"),
             }
         ],
     )
@@ -273,14 +272,14 @@ def test_retired_fields_are_hidden_and_rejected(crm, acme):
 
 def test_unknown_object_lists_available(crm):
     with pytest.raises(NotFoundError) as exc:
-        crm.records.create("lead", {})
+        crm.records.create("invoice", {})
     assert exc.value.code == "OBJECT_NOT_FOUND"
     assert "account" in exc.value.expected
 
 
-def test_new_field_is_usable_immediately_by_other_sessions(crm, tenant, acme):
+def test_new_field_is_usable_immediately_by_other_sessions(crm, tenant, acme, admin):
     with psycopg.connect(DATABASE_URL, autocommit=True) as other_conn:
-        other = Session(other_conn, tenant, ADMIN)
+        other = Session(other_conn, tenant, admin)
         assert "c_region" not in other.records.get("account", acme["id"])
         apply(
             crm,
@@ -288,7 +287,7 @@ def test_new_field_is_usable_immediately_by_other_sessions(crm, tenant, acme):
                 {
                     "op": "add_field",
                     "object": "account",
-                    "field": {"api_name": "c_region", "label": "Region", "type": "text"},
+                    "field": fld("c_region", "text"),
                 }
             ],
         )
@@ -298,12 +297,12 @@ def test_new_field_is_usable_immediately_by_other_sessions(crm, tenant, acme):
         assert updated["c_region"] == "EMEA"
 
 
-def test_concurrent_updates_one_wins(crm, tenant, acme):
+def test_concurrent_updates_one_wins(crm, tenant, acme, admin):
     results: list[str] = []
 
     def worker(name: str) -> None:
         with psycopg.connect(DATABASE_URL, autocommit=True) as c:
-            s = Session(c, tenant, ADMIN)
+            s = Session(c, tenant, admin)
             try:
                 s.records.update("account", acme["id"], {"name": name}, expected_row_version=1)
                 results.append("ok")
@@ -316,3 +315,44 @@ def test_concurrent_updates_one_wins(crm, tenant, acme):
     for t in threads:
         t.join()
     assert sorted(results) == ["conflict", "conflict", "conflict", "ok"]
+
+
+def test_agents_cannot_write_security_objects(agent, admin):
+    with pytest.raises(ApprovalError) as exc:
+        agent.records.create("role", {"name": "Loan Officer", "key": "loan_officer"})
+    assert exc.value.code == "AGENT_WRITE_NOT_ALLOWED"
+    me = agent.records.get("app_user", admin.user_id)  # reading is fine
+    with pytest.raises(ApprovalError):
+        agent.records.update(
+            "app_user", me["id"], {"job_title": "CEO"}, expected_row_version=me["row_version"]
+        )
+    human = agent.as_principal(admin)
+    role = human.records.create("role", {"name": "Loan Officer", "key": "loan_officer"})
+    assert role["is_system_role"] is False
+
+
+def test_bootstrap_creates_organization_admin_and_roles(session, boot):
+    org = session.records.get("organization", boot.organization_id)
+    assert org["name"] == "Acme Lending" and org["unit_type"] == "company"
+    admin = session.records.get("app_user", boot.admin_user_id)
+    assert admin["status"] == "active" and admin["organization"] == org["id"]
+    roles = {r["key"]: r for r in session.records.list("role")}
+    assert set(roles) == {"admin", "member"}
+    assignments = session.records.list("user_role", where={"app_user": admin["id"]})
+    assert [a["role"] for a in assignments] == [roles["admin"]["id"]]
+
+
+def test_user_email_is_unique(session, boot):
+    with pytest.raises(IntegrityError) as exc:
+        session.records.create("app_user", {"display_name": "Dup", "email": "ada@acme.test"})
+    assert exc.value.code == "UNIQUE_VIOLATION"
+
+
+def test_role_assignment_pairs_are_unique(session, boot):
+    member = session.records.list("role", where={"key": "member"})[0]
+    session.records.create("user_role", {"app_user": str(boot.admin_user_id), "role": member["id"]})
+    with pytest.raises(IntegrityError) as exc:
+        session.records.create(
+            "user_role", {"app_user": str(boot.admin_user_id), "role": member["id"]}
+        )
+    assert exc.value.code == "UNIQUE_VIOLATION"

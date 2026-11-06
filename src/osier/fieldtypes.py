@@ -61,6 +61,57 @@ def _check_url(value: str) -> str:
     return value
 
 
+# Built-in text formats. Patterns are fixed by the platform (tenants cannot supply regexes,
+# which avoids catastrophic-backtracking patterns).
+_TEXT_FORMATS: dict[str, tuple[Callable[[str], bool], str]] = {
+    "currency_code": (
+        lambda v: re.fullmatch(r"[A-Z]{3}", v) is not None,
+        "ISO 4217 currency code, e.g. USD",
+    ),
+    "country_code": (
+        lambda v: re.fullmatch(r"[A-Z]{2}", v) is not None,
+        "ISO 3166-1 alpha-2 country code, e.g. US",
+    ),
+    "phone": (
+        lambda v: (
+            re.fullmatch(r"\+?[0-9][0-9 ().\-]{2,38}( ?(x|ext\.?) ?[0-9]{1,6})?", v) is not None
+        ),
+        "phone number, e.g. +1 415 555 0100",
+    ),
+    "language_tag": (
+        lambda v: re.fullmatch(r"[a-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}", v) is not None,
+        "BCP 47 language tag, e.g. en-US",
+    ),
+    "time_zone": (
+        lambda v: v in _time_zones(),
+        "IANA time zone, e.g. Europe/London",
+    ),
+}
+
+
+def _time_zones() -> set[str]:
+    import zoneinfo
+
+    global _TZ_CACHE
+    if _TZ_CACHE is None:
+        _TZ_CACHE = zoneinfo.available_timezones()
+    return _TZ_CACHE
+
+
+_TZ_CACHE: set[str] | None = None
+
+
+def _format_validator(fmt: str) -> Callable[[str], str]:
+    check, description = _TEXT_FORMATS[fmt]
+
+    def validate(value: str) -> str:
+        if not check(value):
+            raise ValueError(f"expected {description}")
+        return value
+
+    return validate
+
+
 @dataclass(frozen=True)
 class TypeSpec:
     normalize_options: Callable[[dict[str, Any]], dict[str, Any]]
@@ -95,8 +146,31 @@ def _int_option(options: dict[str, Any], key: str, default: int, lo: int, hi: in
 
 
 def _text_options(options: dict[str, Any]) -> dict[str, Any]:
-    _expect_keys(options, {"max_length"}, "text")
-    return {"max_length": _int_option(options, "max_length", 255, 1, 10_000)}
+    _expect_keys(options, {"max_length", "format"}, "text")
+    result: dict[str, Any] = {"max_length": _int_option(options, "max_length", 255, 1, 10_000)}
+    fmt = options.get("format")
+    if fmt is not None:
+        if fmt not in _TEXT_FORMATS:
+            raise SchemaChangeError(
+                f"Unknown text format {fmt!r}.",
+                field="options.format",
+                expected=sorted(_TEXT_FORMATS),
+            )
+        result["format"] = fmt
+    return result
+
+
+def _text_type(options: dict[str, Any]) -> Any:
+    base = Annotated[StrictStr, Field(max_length=options["max_length"])]
+    if "format" in options:
+        return Annotated[base, AfterValidator(_format_validator(options["format"]))]
+    return base
+
+
+def _text_describe(options: dict[str, Any]) -> str:
+    if "format" in options:
+        return _TEXT_FORMATS[options["format"]][1]
+    return f"string, at most {options['max_length']} characters"
 
 
 def _long_text_options(options: dict[str, Any]) -> dict[str, Any]:
@@ -107,11 +181,55 @@ def _long_text_options(options: dict[str, Any]) -> dict[str, Any]:
 # --- decimal ------------------------------------------------------------------------------
 
 
+def _bounds(options: dict[str, Any], result: dict[str, Any], *, integer: bool) -> None:
+    for key in ("min", "max"):
+        if key not in options:
+            continue
+        value = options[key]
+        try:
+            if isinstance(value, bool):
+                raise TypeError
+            if integer:
+                if not isinstance(value, int):
+                    raise TypeError
+                result[key] = value
+            else:
+                result[key] = str(Decimal(str(value)))
+        except (TypeError, ArithmeticError):
+            raise SchemaChangeError(
+                f"Option {key!r} must be a number.", field=f"options.{key}"
+            ) from None
+    if (
+        "min" in result
+        and "max" in result
+        and Decimal(str(result["min"])) > Decimal(str(result["max"]))
+    ):
+        raise SchemaChangeError("Option 'min' is greater than 'max'.", field="options.min")
+
+
+def _bounds_text(options: dict[str, Any]) -> str:
+    parts = []
+    if "min" in options:
+        parts.append(f">= {options['min']}")
+    if "max" in options:
+        parts.append(f"<= {options['max']}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _integer_options(options: dict[str, Any]) -> dict[str, Any]:
+    _expect_keys(options, {"min", "max"}, "integer")
+    result: dict[str, Any] = {}
+    _bounds(options, result, integer=True)
+    return result
+
+
 def _decimal_options(options: dict[str, Any]) -> dict[str, Any]:
-    _expect_keys(options, {"precision", "scale"}, "decimal")
+    _expect_keys(options, {"precision", "scale", "min", "max"}, "decimal")
     precision = _int_option(options, "precision", 18, 1, 38)
     scale = _int_option(options, "scale", 2, 0, precision)
-    return {"precision": precision, "scale": scale}
+    result: dict[str, Any] = {"precision": precision, "scale": scale}
+    _bounds(options, result, integer=False)
+    return result
 
 
 # --- picklist -----------------------------------------------------------------------------
@@ -144,9 +262,10 @@ def normalize_picklist_values(values: Any) -> list[dict[str, Any]]:
             raise SchemaChangeError(f"Duplicate picklist value {value!r}.", field="options.values")
         seen.add(value)
         label = entry.get("label") or value.replace("_", " ").capitalize()
-        result.append(
-            {"value": value, "label": str(label), "active": bool(entry.get("active", True))}
-        )
+        item = {"value": value, "label": str(label), "active": bool(entry.get("active", True))}
+        if entry.get("description"):
+            item["description"] = str(entry["description"])[:500]
+        result.append(item)
     return result
 
 
@@ -217,8 +336,8 @@ REGISTRY: dict[FieldType, TypeSpec] = {
     FieldType.TEXT: TypeSpec(
         normalize_options=_text_options,
         column_type=lambda o: sql.SQL("varchar({})").format(sql.Literal(o["max_length"])),
-        python_type=lambda o: Annotated[StrictStr, Field(max_length=o["max_length"])],
-        describe=lambda o: f"string, at most {o['max_length']} characters",
+        python_type=_text_type,
+        describe=_text_describe,
     ),
     FieldType.LONG_TEXT: TypeSpec(
         normalize_options=_long_text_options,
@@ -228,10 +347,12 @@ REGISTRY: dict[FieldType, TypeSpec] = {
         indexable=False,
     ),
     FieldType.INTEGER: TypeSpec(
-        normalize_options=_no_options("integer"),
+        normalize_options=_integer_options,
         column_type=_fixed("bigint"),
-        python_type=lambda o: Annotated[StrictInt, Field(ge=-(2**63), le=2**63 - 1)],
-        describe=lambda o: "integer",
+        python_type=lambda o: Annotated[
+            StrictInt, Field(ge=o.get("min", -(2**63)), le=o.get("max", 2**63 - 1))
+        ],
+        describe=lambda o: "integer" + _bounds_text(o),
     ),
     FieldType.DECIMAL: TypeSpec(
         normalize_options=_decimal_options,
@@ -240,11 +361,18 @@ REGISTRY: dict[FieldType, TypeSpec] = {
         ),
         python_type=lambda o: Annotated[
             Decimal,
-            Field(max_digits=o["precision"], decimal_places=o["scale"], allow_inf_nan=False),
+            Field(
+                max_digits=o["precision"],
+                decimal_places=o["scale"],
+                allow_inf_nan=False,
+                ge=Decimal(o["min"]) if "min" in o else None,
+                le=Decimal(o["max"]) if "max" in o else None,
+            ),
         ],
         describe=lambda o: (
             f"number with at most {o['precision']} digits, "
-            f"{o['scale']} after the decimal point (send as a string for exact values)"
+            f"{o['scale']} after the decimal point{_bounds_text(o)} "
+            "(send as a string for exact values)"
         ),
     ),
     FieldType.BOOLEAN: TypeSpec(

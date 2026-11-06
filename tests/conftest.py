@@ -3,18 +3,18 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from typing import Any
 
 import psycopg
 import pytest
 
-from osier import Principal, Session, drop_tenant, provision_tenant, standard
+from osier import Principal, Session, bootstrap_tenant, drop_tenant
 from osier.context import ActorType
 
 DATABASE_URL = os.environ.get(
     "OSIER_TEST_DATABASE_URL", "postgresql://osier:osier@localhost:5432/osier_test"
 )
 
-ADMIN = Principal(user_id=uuid.UUID("00000000-0000-0000-0000-00000000a001"), source="chat")
 HUMAN_FOR_AGENT = uuid.UUID("00000000-0000-0000-0000-00000000a002")
 AGENT = Principal(
     user_id=uuid.UUID("00000000-0000-0000-0000-00000000b001"),
@@ -36,27 +36,71 @@ def conn() -> Iterator[psycopg.Connection]:
 
 
 @pytest.fixture
-def tenant(conn: psycopg.Connection):
-    t = provision_tenant(conn)
-    yield t
-    drop_tenant(conn, t)
+def boot(conn):
+    """A bootstrapped tenant: core package, organization, administrator."""
+    b = bootstrap_tenant(
+        conn,
+        organization_name="Acme Lending",
+        admin_email="ada@acme.test",
+        admin_display_name="Ada Admin",
+    )
+    yield b
+    drop_tenant(conn, b.tenant)
 
 
 @pytest.fixture
-def session(conn, tenant) -> Session:
-    return Session(conn, tenant, ADMIN)
+def tenant(boot):
+    return boot.tenant
+
+
+@pytest.fixture
+def admin(boot) -> Principal:
+    return Principal(user_id=boot.admin_user_id, source="chat")
+
+
+@pytest.fixture
+def session(conn, boot, admin) -> Session:
+    return Session(conn, boot.tenant, admin)
 
 
 @pytest.fixture
 def crm(session: Session) -> Session:
-    """A tenant with the standard objects installed."""
-    standard.install(session)
+    """A tenant with the CRM package installed."""
+    proposal = session.packages.propose_install(["crm"])
+    session.packages.apply(proposal.id, diff_hash=proposal.diff_hash)
     return session
 
 
 @pytest.fixture
 def agent(crm: Session) -> Session:
     return crm.as_principal(AGENT)
+
+
+def fld(api_name: str, type: str, **kwargs: Any) -> dict[str, Any]:
+    """A documented field spec for tests."""
+    label = api_name.removeprefix("c_").replace("_", " ").title()
+    return {
+        "api_name": api_name,
+        "label": label,
+        "type": type,
+        "description": f"Test field holding the {label.lower()} used by this test case.",
+        **kwargs,
+    }
+
+
+def obj(api_name: str, label: str, fields: list[dict[str, Any]] | None = None, **kw: Any):
+    return {
+        "op": "create_object",
+        "api_name": api_name,
+        "label": label,
+        "description": f"Test object representing a {label.lower()} for this test case.",
+        "fields": fields or [],
+        **kw,
+    }
+
+
+def add(object_name: str, api_name: str, type: str, **kwargs: Any) -> dict[str, Any]:
+    return {"op": "add_field", "object": object_name, "field": fld(api_name, type, **kwargs)}
 
 
 def apply(session: Session, operations):

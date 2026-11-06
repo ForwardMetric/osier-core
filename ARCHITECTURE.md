@@ -203,23 +203,38 @@ fields count towards the limit because their columns and data are kept.
 PostgreSQL's hard limit is 1,600 columns per table. A permanent purge of
 retired columns (respecting retention) is future work.
 
-### 4.4 Field types (initial set)
+### 4.4 Field types
 
-`text`, `long_text`, `integer`, `decimal(precision, scale)`, `currency`,
-`boolean`, `date`, `datetime`, `email`, `phone`, `url`, `picklist`,
-`multi_picklist`, `lookup` (foreign key), `json` (escape hatch, not
-indexable/reportable by default).
+Implemented: `text`, `long_text`, `integer`, `decimal(precision, scale)`,
+`boolean`, `date`, `datetime` (time zone required), `email`, `url`,
+`picklist`, `lookup` (foreign key).
+
+Options:
+
+- `text` may declare a built-in **format**: `currency_code` (ISO 4217),
+  `country_code` (ISO 3166-1 alpha-2), `phone`, `language_tag` (BCP 47),
+  `time_zone` (IANA). Tenants cannot supply their own regular expressions
+  (this avoids patterns with catastrophic backtracking).
+- `integer` and `decimal` may declare `min` and `max`.
+- Picklist values may carry a `description` explaining what each value means.
+
+Planned: `multi_picklist`, `json` (escape hatch, not indexable/reportable by
+default).
 
 Every type maps to a fixed PostgreSQL column type and a validator (§6.1).
-Domain types such as `email` are validated in the engine *and* backed by a
-`CHECK` constraint where practical.
+Domain rules (formats, picklist values, bounds) are currently enforced by the
+engine only, not by database `CHECK` constraints, so adding a picklist value
+needs no DDL. Direct SQL writes bypass them; only the application role may
+write object tables.
 
 ### 4.5 Relationships and integrity
 
 - A **lookup** is a real foreign key column. Delete behavior from metadata maps
   to the real FK action (`ON DELETE RESTRICT | CASCADE | SET NULL`).
 - **Many-to-many** relationships compile to a junction table with two real FKs.
-- **Uniqueness** compiles to a real unique index.
+- **Uniqueness** compiles to a real unique index. Objects may also declare
+  `unique_together` (e.g. one assignment per user and role), which compiles
+  to a multi-column unique index.
 - **Required** compiles to `NOT NULL` (with the backfill rules in §5.3).
 
 Because these are real constraints, integrity holds even if application code
@@ -230,6 +245,34 @@ has a bug.
 `id` (UUID, primary key), `created_at`, `created_by`, `updated_at`,
 `updated_by`, `owner_id` (for record-level access, §8), `row_version` (for
 optimistic concurrency).
+
+---
+
+### 4.7 Design rules: documentation and ontology
+
+So that the schema stays understandable to AI agents and people, every change
+is checked against deterministic design rules (`src/osier/design.py`), for
+platform packages and tenants alike:
+
+- **Every object and field needs a description** of at least 4 words and 20
+  characters. Placeholders ("TBD", "test") and descriptions that only repeat
+  the label or name are rejected (`DOCUMENTATION_REQUIRED`,
+  `DOCUMENTATION_TOO_THIN`). Descriptions cannot be cleared later.
+- **Names must say what they hold.** Names made only of generic words and
+  numbers (`c_field1`, `c_new_data`, `c_misc`) are rejected (`POOR_NAME`).
+- **Ontology links.** Objects and fields may carry a `semantic_ref`: the URI
+  of an ontology term, normally schema.org (e.g.
+  `https://schema.org/givenName`). Platform packages use schema.org wherever
+  a matching term exists.
+- **Advice.** Tenant proposals also get non-blocking `advice` entries, e.g. a
+  missing `semantic_ref`, booleans not named `is_…`/`has_…`, picklist values
+  without descriptions.
+- `describe_schema` returns descriptions, semantic refs, picklist value
+  descriptions, and constraints, so agents always see the documented model.
+
+Limits: deterministic checks reject the obviously bad but cannot guarantee
+good design. The future `create_object` MCP tool should add an AI design
+review (non-blocking, shown to the approver) on top of these rules.
 
 ---
 
@@ -505,11 +548,45 @@ design.
 - **Custom** objects and fields (`c_` prefix) are tenant-owned.
 - Tenants may add custom fields to standard objects.
 
-### 11.2 Standard-object packages
+### 11.2 Packages (standard objects as plugins)
 
-Standard objects ship as versioned packages (metadata + migrations). New
-tenants are provisioned with the current package; existing tenants are moved
-forward through change sets marked `source = upgrade`.
+Standard objects ship as **packages** that tenants choose to install
+(`src/osier/packages/`). A package is metadata only — objects, fields, seed
+records; later views, workflows, permission templates — **never code**.
+
+| Package | Depends on | Objects | Notes |
+|---|---|---|---|
+| `core` | — | organization, app_user (User), role, user_role (Role Assignment) | Installed in every tenant at bootstrap; cannot be removed. User, Role, and Role Assignment are **protected**: agents cannot write them. |
+| `crm` | core | account, contact, lead, opportunity, activity | schema.org Organization, Person, PostalAddress, Action where they fit. |
+| `case_management` | crm | support_case (Case), case_comment | schema.org Comment for comments. |
+
+schema.org has no types for Lead, Opportunity, or Case; those are documented
+in their own words with no `semantic_ref` rather than an invented one.
+
+Rules:
+
+- **Installing** runs an ordinary change set with `source = package`, shown
+  to and **approved by a human** (agents may propose). Missing dependencies
+  are added automatically, dependencies first. The engine records installs in
+  `meta_packages` and creates seed records (e.g. the `admin` and `member`
+  roles) idempotently.
+- **Tamper-proof.** The engine rebuilds the expected operations from the
+  package registry and rejects any package change set that differs
+  (`PACKAGE_MISMATCH`), so the package path cannot create arbitrary standard
+  objects.
+- **Dependencies are required.** A package cannot be installed before its
+  dependencies, nor uninstalled while an installed package depends on it.
+- **Uninstalling retires** the package's objects (hidden, data kept). It is
+  blocked by tenant lookups that still point at those objects. Reinstalling a
+  previously uninstalled package is not supported yet.
+- **Platform packages only.** Third-party packages are out of scope for now.
+- Package objects are standard-owned; tenants may extend them with `c_` fields.
+- **Upgrades** (a new package version) will run as change sets with
+  `source = upgrade` (§11.3).
+
+New tenants are created with `bootstrap_tenant`, which installs `core` and
+creates the tenant's organization, the first administrator user, and their
+admin role assignment.
 
 ### 11.3 Upgrade process
 
@@ -649,6 +726,8 @@ tenant.
 | 6 | How long field history and retired fields/objects are kept | **Proposed default:** keep indefinitely; per-tenant retention settings later. Personal-data erasure requests handled by redacting values in history, not deleting history rows. |
 | 7 | Background job system | **Decided:** Postgres-backed, metadata-driven, behind our own interface, also used for agent workflows. **Deferred** to M7; tool chosen by trial then (§12). |
 | 8 | Are workflows metadata-driven too? | **Decided:** yes — triggers, conditions, and actions as metadata (§12.2); built in M7. |
+| 9 | Reinstalling an uninstalled package: reactivate its retired objects, or start fresh? | Open; blocked with `PACKAGE_REINSTALL_NOT_SUPPORTED` for now. |
+| 10 | How do engine principals map to `app_user` records once authentication exists? | Bootstrap uses the admin's `app_user` id as the principal id; M3 formalizes this. |
 
 ---
 

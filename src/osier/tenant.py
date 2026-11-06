@@ -28,7 +28,10 @@ _ENGINE_DDL = [
         api_name     text NOT NULL UNIQUE,
         label        text NOT NULL,
         plural_label text NOT NULL,
-        description  text,
+        description  text NOT NULL,
+        semantic_ref text,
+        options      jsonb NOT NULL DEFAULT '{{}}',
+        package      text,
         owner        text NOT NULL CHECK (owner IN ('standard', 'custom')),
         status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retired')),
         created_at   timestamptz NOT NULL DEFAULT now(),
@@ -41,7 +44,8 @@ _ENGINE_DDL = [
         object_id     uuid NOT NULL REFERENCES {s}.meta_objects (id),
         api_name      text NOT NULL,
         label         text NOT NULL,
-        description   text,
+        description   text NOT NULL,
+        semantic_ref  text,
         type          text NOT NULL,
         required      boolean NOT NULL DEFAULT false,
         is_unique     boolean NOT NULL DEFAULT false,
@@ -63,7 +67,8 @@ _ENGINE_DDL = [
         id                     uuid PRIMARY KEY,
         status                 text NOT NULL
                                CHECK (status IN ('proposed', 'applied', 'failed', 'superseded')),
-        source                 text NOT NULL CHECK (source IN ('tenant', 'platform', 'upgrade')),
+        source                 text NOT NULL
+                               CHECK (source IN ('tenant', 'platform', 'upgrade', 'package')),
         operations             jsonb NOT NULL,
         summary                jsonb NOT NULL,
         ddl                    jsonb NOT NULL,
@@ -81,6 +86,17 @@ _ENGINE_DDL = [
         error                  jsonb,
         proposed_at            timestamptz NOT NULL DEFAULT now(),
         applied_at             timestamptz
+    )
+    """,
+    """
+    CREATE TABLE {s}.meta_packages (
+        package                 text PRIMARY KEY,
+        version                 integer NOT NULL,
+        status                  text NOT NULL CHECK (status IN ('installed', 'uninstalled')),
+        change_set_id           uuid NOT NULL,
+        installed_at            timestamptz NOT NULL DEFAULT now(),
+        uninstall_change_set_id uuid,
+        uninstalled_at          timestamptz
     )
     """,
     """

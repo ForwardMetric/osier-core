@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 
@@ -10,6 +10,9 @@ from .changesets import SchemaService
 from .context import Principal, Tenant
 from .metadata import MetadataRegistry, SchemaSnapshot
 from .records import RecordService
+
+if TYPE_CHECKING:
+    from .packages import PackageService
 
 
 class Session:
@@ -34,6 +37,12 @@ class Session:
         self.metadata = MetadataRegistry(conn, tenant)
         self.schema = SchemaService(conn, tenant, principal)
         self.records = RecordService(conn, tenant, principal)
+
+    @property
+    def packages(self) -> PackageService:
+        from .packages import PackageService
+
+        return PackageService(self)
 
     def snapshot(self) -> SchemaSnapshot:
         return self.metadata.snapshot()

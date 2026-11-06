@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
+from . import design
 from .context import ActorType, Principal, Tenant
 from .errors import ApprovalError, InvalidNameError, NotFoundError, SchemaChangeError
 from .fieldtypes import (
@@ -60,6 +61,7 @@ class FieldSpec(_Op):
     track_history: bool = False
     default: Any = None
     options: dict[str, Any] = Field(default_factory=dict)
+    semantic_ref: str | None = None
 
 
 class CreateObject(_Op):
@@ -68,7 +70,10 @@ class CreateObject(_Op):
     label: str = Field(min_length=1, max_length=200)
     plural_label: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    semantic_ref: str | None = None
     fields: list[FieldSpec] = Field(default_factory=list)
+    unique_together: list[list[str]] = Field(default_factory=list)
+    protected: bool = False  # security-sensitive; only platform packages may set this
 
 
 class UpdateObject(_Op):
@@ -77,6 +82,7 @@ class UpdateObject(_Op):
     label: str | None = Field(default=None, min_length=1, max_length=200)
     plural_label: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    semantic_ref: str | None = None
 
 
 class RetireObject(_Op):
@@ -101,6 +107,7 @@ class UpdateField(_Op):
     default: Any = None  # only applied if explicitly provided; null removes the default
     add_picklist_values: list[Any] | None = None
     deactivate_picklist_values: list[str] | None = None
+    semantic_ref: str | None = None
 
 
 class RetireField(_Op):
@@ -109,8 +116,30 @@ class RetireField(_Op):
     field: str
 
 
+class RegisterPackage(_Op):
+    """Internal: records a package installation. Only valid in package change sets."""
+
+    op: Literal["register_package"]
+    package: str
+    version: int
+
+
+class UnregisterPackage(_Op):
+    """Internal: records a package uninstallation. Only valid in package change sets."""
+
+    op: Literal["unregister_package"]
+    package: str
+
+
 Operation = Annotated[
-    CreateObject | UpdateObject | RetireObject | AddField | UpdateField | RetireField,
+    CreateObject
+    | UpdateObject
+    | RetireObject
+    | AddField
+    | UpdateField
+    | RetireField
+    | RegisterPackage
+    | UnregisterPackage,
     Field(discriminator="op"),
 ]
 _OPERATIONS_ADAPTER = TypeAdapter(list[Operation])
@@ -160,6 +189,7 @@ class _WField:
     owner: Owner
     status: str
     position: int
+    semantic_ref: str | None = None
     is_new: bool = False
 
 
@@ -173,6 +203,9 @@ class _WObject:
     owner: Owner
     status: str
     fields: dict[str, _WField]
+    semantic_ref: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+    package: str | None = None
     is_new: bool = False
 
 
@@ -220,8 +253,10 @@ class _Planner:
         self.snapshot = snapshot
         self.schema = snapshot.tenant.schema
         self.change_set_id = change_set_id
+        self.source = source
         self.tenant_change = source == "tenant"
         self.owner = Owner.CUSTOM if self.tenant_change else Owner.STANDARD
+        self.current_package: str | None = None
         self.plan = Plan()
         self.objects: dict[str, _WObject] = {
             name: _WObject(
@@ -232,6 +267,9 @@ class _Planner:
                 description=o.description,
                 owner=o.owner,
                 status=o.status,
+                semantic_ref=o.semantic_ref,
+                options=dict(o.options),
+                package=o.package,
                 fields={
                     fname: _WField(
                         id=f.id,
@@ -248,6 +286,7 @@ class _Planner:
                         owner=f.owner,
                         status=f.status,
                         position=f.position,
+                        semantic_ref=f.semantic_ref,
                     )
                     for fname, f in o.fields.items()
                 },
@@ -338,6 +377,11 @@ class _Planner:
                 code="FIELD_EXISTS",
                 field="api_name",
             )
+        design.check_name_quality(name, kind="field", where=where)
+        design.check_description(
+            spec.description, label=spec.label, api_name=name, kind="field", where=where
+        )
+        semantic_ref = design.check_semantic_ref(spec.semantic_ref, where=where)
         ftype = parse_field_type(spec.type)
         type_spec = REGISTRY[ftype]
         options = type_spec.normalize_options(dict(spec.options))
@@ -397,8 +441,28 @@ class _Planner:
             owner=self.owner,
             status="active",
             position=position,
+            semantic_ref=semantic_ref,
             is_new=True,
         )
+
+    def _advise_field(self, obj: _WObject, f: _WField) -> None:
+        if not self.tenant_change:
+            return  # platform packages are reviewed by the platform team
+        for message in design.field_advice(
+            api_name=f.api_name,
+            type_=f.type.value,
+            semantic_ref=f.semantic_ref,
+            description=f.description or "",
+            options=f.options,
+        ):
+            self.plan.impact.append(
+                {
+                    "severity": "advice",
+                    "message": message,
+                    "object": obj.api_name,
+                    "field": f.api_name,
+                }
+            )
 
     def _column_def(self, f: _WField, *, include_not_null: bool) -> sql.Composable:
         parts: list[sql.Composable] = [
@@ -440,8 +504,8 @@ class _Planner:
             sql.SQL(
                 "INSERT INTO {} (id, object_id, api_name, label, description, type, required, "
                 "is_unique, indexed, track_history, default_value, options, owner, status, "
-                "index_status, position) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, 'active', %s, %s)"
+                "index_status, position, semantic_ref) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s, %s, %s, %s, 'active', %s, %s, %s)"
             ).format(self._meta("meta_fields")),
             (
                 f.id,
@@ -459,8 +523,10 @@ class _Planner:
                 f.owner.value,
                 index_status,
                 f.position,
+                f.semantic_ref,
             ),
         )
+        self._advise_field(obj, f)
 
     # ---- operations ----------------------------------------------------------------
 
@@ -477,6 +543,20 @@ class _Planner:
                 code="OBJECT_EXISTS",
                 field="api_name",
             )
+        where = f"Operation {i}"
+        design.check_name_quality(name, kind="object", where=where)
+        design.check_description(
+            op.description, label=op.label, api_name=name, kind="object", where=where
+        )
+        semantic_ref = design.check_semantic_ref(op.semantic_ref, where=where)
+        if op.protected and self.source != "package":
+            raise SchemaChangeError(
+                f"{where}: only platform packages can create protected objects.",
+                code="NOT_ALLOWED",
+                field="protected",
+            )
+        if self.source == "package" and self.current_package is None:
+            raise SchemaChangeError(f"{where}: package objects must follow register_package.")
         obj = _WObject(
             id=self._id("object", name),
             api_name=name,
@@ -486,6 +566,8 @@ class _Planner:
             owner=self.owner,
             status="active",
             fields={},
+            semantic_ref=semantic_ref,
+            package=self.current_package if self.source == "package" else None,
             is_new=True,
         )
         self.objects[name] = obj  # registered first so self-referencing lookups resolve
@@ -507,16 +589,58 @@ class _Planner:
             sql.SQL("retired_at timestamptz"),
             sql.SQL("retired_by uuid"),
         ] + [self._column_def(f, include_not_null=True) for f in new_fields]
+
+        unique_sets: list[list[str]] = []
+        unique_statements: list[sql.Composable] = []
+        for combo in op.unique_together:
+            if len(combo) < 2 or len(set(combo)) != len(combo):
+                raise SchemaChangeError(
+                    f"{where}: each unique_together entry needs two or more distinct fields.",
+                    field="unique_together",
+                )
+            ids = []
+            for fname in combo:
+                f = obj.fields.get(fname)
+                if f is None or not REGISTRY[f.type].indexable:
+                    raise SchemaChangeError(
+                        f"{where}: unique_together field {fname!r} is not an indexable field "
+                        "of this object.",
+                        field="unique_together",
+                        expected=sorted(obj.fields),
+                    )
+                ids.append(str(f.id))
+            unique_sets.append(ids)
+            unique_statements.append(
+                sql.SQL("CREATE UNIQUE INDEX {} ON {} ({})").format(
+                    sql.Identifier(index_name("uq", uuid.uuid5(obj.id, ",".join(ids)))),
+                    self._t(name),
+                    sql.SQL(", ").join(sql.Identifier(c) for c in combo),
+                )
+            )
+        obj.options = {"unique_together": unique_sets, "protected": op.protected}
+
         self.plan.run(
             sql.SQL("CREATE TABLE {} ({})").format(self._t(name), sql.SQL(", ").join(columns)),
             ddl=True,
         )
+        for statement in unique_statements:
+            self.plan.run(statement, ddl=True)
         self.plan.run(
             sql.SQL(
-                "INSERT INTO {} (id, api_name, label, plural_label, description, owner) "
-                "VALUES (%s, %s, %s, %s, %s, %s)"
+                "INSERT INTO {} (id, api_name, label, plural_label, description, owner, "
+                "semantic_ref, options, package) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ).format(self._meta("meta_objects")),
-            (obj.id, name, obj.label, obj.plural_label, obj.description, obj.owner.value),
+            (
+                obj.id,
+                name,
+                obj.label,
+                obj.plural_label,
+                obj.description,
+                obj.owner.value,
+                obj.semantic_ref,
+                Jsonb(obj.options),
+                obj.package,
+            ),
         )
         for f in new_fields:
             if f.indexed:
@@ -533,14 +657,25 @@ class _Planner:
         }
         if not changes:
             raise SchemaChangeError(f"Operation {i}: nothing to change.", code="NO_CHANGE")
+        where = f"Operation {i}"
+        if "description" in changes:
+            design.check_description(
+                changes["description"],
+                label=changes.get("label", obj.label),
+                api_name=obj.api_name,
+                kind="object",
+                where=where,
+            )
+        if "semantic_ref" in changes:
+            design.check_semantic_ref(changes["semantic_ref"], where=where)
         for key, value in changes.items():
             setattr(obj, key, value)
         self.plan.run(
             sql.SQL(
                 "UPDATE {} SET label = %s, plural_label = %s, description = %s, "
-                "updated_at = now() WHERE id = %s"
+                "semantic_ref = %s, updated_at = now() WHERE id = %s"
             ).format(self._meta("meta_objects")),
-            (obj.label, obj.plural_label, obj.description, obj.id),
+            (obj.label, obj.plural_label, obj.description, obj.semantic_ref, obj.id),
         )
         self.plan.summary.append(f"Update {sorted(changes)} on object {obj.api_name!r}.")
 
@@ -649,7 +784,18 @@ class _Planner:
         column = sql.Identifier(f.api_name)
         changed: list[str] = []
 
-        for attr in ("label", "description", "track_history"):
+        where = f"Operation {i}"
+        if "description" in provided:
+            design.check_description(
+                op.description,
+                label=op.label or f.label,
+                api_name=f.api_name,
+                kind="field",
+                where=where,
+            )
+        if "semantic_ref" in provided:
+            design.check_semantic_ref(op.semantic_ref, where=where)
+        for attr in ("label", "description", "track_history", "semantic_ref"):
             if attr in provided and getattr(op, attr) != getattr(f, attr):
                 setattr(f, attr, getattr(op, attr))
                 changed.append(attr)
@@ -741,7 +887,8 @@ class _Planner:
         self.plan.run(
             sql.SQL(
                 "UPDATE {} SET label = %s, description = %s, required = %s, track_history = %s, "
-                "default_value = %s, options = %s, updated_at = now() WHERE id = %s"
+                "default_value = %s, options = %s, semantic_ref = %s, updated_at = now() "
+                "WHERE id = %s"
             ).format(self._meta("meta_fields")),
             (
                 f.label,
@@ -750,6 +897,7 @@ class _Planner:
                 f.track_history,
                 Jsonb(f.default) if f.default is not None else None,
                 Jsonb(f.options),
+                f.semantic_ref,
                 f.id,
             ),
         )
@@ -784,6 +932,43 @@ class _Planner:
         self.plan.summary.append(f"Retire field {obj.api_name}.{f.api_name}.")
 
 
+def _register_package(self: _Planner, op: RegisterPackage, i: int) -> None:
+    if self.source != "package":
+        raise SchemaChangeError(
+            f"Operation {i}: register_package is only valid when installing a package.",
+            code="NOT_ALLOWED",
+        )
+    self.current_package = op.package
+    self.plan.run(
+        sql.SQL(
+            "INSERT INTO {} (package, version, status, change_set_id) "
+            "VALUES (%s, %s, 'installed', %s)"
+        ).format(self._meta("meta_packages")),
+        (op.package, op.version, self.change_set_id),
+    )
+    self.plan.summary.append(f"Install package {op.package!r} (version {op.version}).")
+
+
+def _unregister_package(self: _Planner, op: UnregisterPackage, i: int) -> None:
+    if self.source != "package":
+        raise SchemaChangeError(
+            f"Operation {i}: unregister_package is only valid when uninstalling a package.",
+            code="NOT_ALLOWED",
+        )
+    self.plan.run(
+        sql.SQL(
+            "UPDATE {} SET status = 'uninstalled', uninstalled_at = now(), "
+            "uninstall_change_set_id = %s WHERE package = %s AND status = 'installed'"
+        ).format(self._meta("meta_packages")),
+        (self.change_set_id, op.package),
+    )
+    self.plan.summary.append(f"Uninstall package {op.package!r} (its objects are retired).")
+
+
+_Planner.register_package = _register_package  # type: ignore[attr-defined]
+_Planner.unregister_package = _unregister_package  # type: ignore[attr-defined]
+
+
 def _validate_default(ftype: FieldType, options: dict[str, Any], value: Any, where: str) -> Any:
     adapter = TypeAdapter(REGISTRY[ftype].python_type(options))
     try:
@@ -809,6 +994,10 @@ def _plan(
     source: str,
     operations: list[Any],
 ) -> Plan:
+    if source == "package":
+        from .packages import verify_package_operations
+
+        verify_package_operations(conn, snapshot, operations)
     planner = _Planner(conn, snapshot, change_set_id, source)
     for index, op in enumerate(operations, start=1):
         getattr(planner, op.op)(op, index)
@@ -894,9 +1083,9 @@ class SchemaService:
         Raises ``SchemaChangeError`` for invalid requests. Data-dependent problems
         (e.g. existing records missing a value) are returned as ``blockers``.
         """
-        if source not in ("tenant", "platform", "upgrade"):
+        if source not in ("tenant", "platform", "upgrade", "package"):
             raise SchemaChangeError(f"Invalid source {source!r}.")
-        if source != "tenant" and self._principal.actor_type is not ActorType.SYSTEM:
+        if source in ("platform", "upgrade") and self._principal.actor_type is not ActorType.SYSTEM:
             raise ApprovalError("Only the platform may propose platform or upgrade changes.")
         ops = parse_operations(operations)
         op_dicts = [op.model_dump(mode="json", exclude_unset=True) for op in ops]
@@ -1039,13 +1228,17 @@ class SchemaService:
                 code="DIFF_HASH_MISMATCH",
                 hint="Approve the exact proposal that was shown.",
             )
-        if row["source"] == "tenant" and not approver.is_human:
-            raise ApprovalError(
-                "Schema changes must be approved by a person, not an agent.",
-                code="APPROVAL_REQUIRES_HUMAN",
-                hint="Show the proposal to the user and ask them to approve it.",
-            )
-        if row["source"] != "tenant" and approver.actor_type is not ActorType.SYSTEM:
+        source = row["source"]
+        if source == "tenant" or (
+            source == "package" and approver.actor_type is not ActorType.SYSTEM
+        ):
+            if not approver.is_human:
+                raise ApprovalError(
+                    "Schema changes must be approved by a person, not an agent.",
+                    code="APPROVAL_REQUIRES_HUMAN",
+                    hint="Show the proposal to the user and ask them to approve it.",
+                )
+        elif source in ("platform", "upgrade") and approver.actor_type is not ActorType.SYSTEM:
             raise ApprovalError("Platform changes are applied by the platform.")
         if row["base_schema_version"] != version:
             raise _Superseded(row["id"])
