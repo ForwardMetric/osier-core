@@ -15,7 +15,9 @@ from .errors import InvalidNameError
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 MAX_NAME_LENGTH = 48
-CUSTOM_PREFIX = "c_"
+# Tenant-defined objects and fields start with "c__". Platform-owned names may not
+# start with "c_" and may never contain "__", so the two can never collide.
+CUSTOM_PREFIX = "c__"
 
 
 class Owner(StrEnum):
@@ -89,9 +91,12 @@ def validate_api_name(name: object, *, kind: str, owner: Owner) -> str:
             f"at most {MAX_NAME_LENGTH} characters",
             hint=f"Try {suggest_name(name, owner)!r}.",
         )
-    if "__" in name or name.endswith("_"):
+    is_custom_name = name.startswith(CUSTOM_PREFIX)
+    body = name[len(CUSTOM_PREFIX) :] if is_custom_name else name
+    if not body or not body[0].isalpha() or "__" in body or name.endswith("_"):
         raise InvalidNameError(
-            f"Invalid {kind} name {name!r}: no double or trailing underscores.",
+            f"Invalid {kind} name {name!r}: after the {CUSTOM_PREFIX!r} prefix, names start "
+            "with a letter and contain no double or trailing underscores.",
             field="api_name",
             hint=f"Try {suggest_name(name, owner)!r}.",
         )
@@ -111,16 +116,17 @@ def validate_api_name(name: object, *, kind: str, owner: Owner) -> str:
     if kind == "object" and name in ENGINE_TABLES:
         raise InvalidNameError(f"{name!r} is reserved by the platform.", field="api_name")
 
-    is_custom_name = name.startswith(CUSTOM_PREFIX)
     if owner is Owner.CUSTOM and not is_custom_name:
         raise InvalidNameError(
             f"Custom {kind} names must start with {CUSTOM_PREFIX!r}.",
             field="api_name",
             hint=f"Use {suggest_name(name, owner)!r}.",
         )
-    if owner is Owner.STANDARD and is_custom_name:
+    if owner is Owner.STANDARD and name.startswith("c_"):
         raise InvalidNameError(
-            f"Standard {kind} names may not start with {CUSTOM_PREFIX!r}.", field="api_name"
+            f"Platform-owned {kind} names may not start with 'c_' (reserved for custom "
+            f"{CUSTOM_PREFIX!r} names).",
+            field="api_name",
         )
     return name
 
@@ -131,10 +137,12 @@ def suggest_name(raw: str, owner: Owner) -> str:
     text = re.sub(r"_+", "_", text) or "field"
     if not text[0].isalpha():
         text = f"x_{text}"
-    if owner is Owner.CUSTOM and not text.startswith(CUSTOM_PREFIX):
+    while text.startswith("c_"):  # drop any existing custom-looking prefix
+        text = text[2:].lstrip("_") or "field"
+    if not text[0].isalpha():
+        text = f"x_{text}"
+    if owner is Owner.CUSTOM:
         text = CUSTOM_PREFIX + text
-    if owner is Owner.STANDARD and text.startswith(CUSTOM_PREFIX):
-        text = text[len(CUSTOM_PREFIX) :]
     return text[:MAX_NAME_LENGTH].rstrip("_")
 
 

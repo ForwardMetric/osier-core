@@ -336,7 +336,7 @@ class _Planner:
                 f"Operation {op_index}: {what} is a standard (platform-owned) item and cannot "
                 "be changed this way.",
                 code="STANDARD_ITEM_PROTECTED",
-                hint="You can add custom fields (prefixed 'c_') to standard objects, and change "
+                hint="You can add custom fields (prefixed 'c__') to standard objects, and change "
                 "labels, help text, picklist values, required, and history tracking.",
             )
 

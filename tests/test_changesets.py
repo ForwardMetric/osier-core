@@ -37,32 +37,32 @@ def test_create_custom_object_with_fields(crm):
         crm,
         [
             obj(
-                "c_loan",
+                "c__loan",
                 "Loan",
                 [
-                    fld("c_principal_amount", "decimal", required=True),
-                    fld("c_reference", "text", unique=True),
-                    fld("c_borrower", "lookup", options={"target": "account"}),
+                    fld("c__principal_amount", "decimal", required=True),
+                    fld("c__reference", "text", unique=True),
+                    fld("c__borrower", "lookup", options={"target": "account"}),
                 ],
             )
         ],
     )
-    loan = crm.snapshot().get_object("c_loan")
-    assert set(loan.active_fields) == {"c_principal_amount", "c_reference", "c_borrower"}
-    assert loan.fields["c_reference"].index_status == "active"
+    loan = crm.snapshot().get_object("c__loan")
+    assert set(loan.active_fields) == {"c__principal_amount", "c__reference", "c__borrower"}
+    assert loan.fields["c__reference"].index_status == "active"
     assert loan.package is None and loan.owner.value == "custom"
     assert result.schema_version == crm.snapshot().version
 
 
 def test_proposal_shows_ddl_summary_and_advice_without_changing_anything(crm):
-    proposal = crm.schema.propose([add("account", "c_region", "text")])
+    proposal = crm.schema.propose([add("account", "c__region", "text")])
     assert proposal.can_apply
-    assert any('ADD COLUMN "c_region"' in ddl for ddl in proposal.ddl)
-    assert proposal.summary == ["Add field 'c_region' (text) to 'account'."]
+    assert any('ADD COLUMN "c__region"' in ddl for ddl in proposal.ddl)
+    assert proposal.summary == ["Add field 'c__region' (text) to 'account'."]
     assert any(
         i["severity"] == "advice" and "semantic_ref" in i["message"] for i in proposal.impact
     )
-    assert "c_region" not in crm.snapshot().get_object("account").fields
+    assert "c__region" not in crm.snapshot().get_object("account").fields
 
 
 # --- documentation and naming rules ---------------------------------------------------
@@ -79,7 +79,7 @@ def test_proposal_shows_ddl_summary_and_advice_without_changing_anything(crm):
     ],
 )
 def test_fields_must_be_documented(crm, description, code):
-    spec = fld("c_region", "text")
+    spec = fld("c__region", "text")
     spec["label"] = "Region"
     spec["description"] = description
     with pytest.raises(SchemaChangeError) as exc:
@@ -88,14 +88,14 @@ def test_fields_must_be_documented(crm, description, code):
 
 
 def test_objects_must_be_documented(crm):
-    op = obj("c_project", "Project")
+    op = obj("c__project", "Project")
     op["description"] = None
     with pytest.raises(SchemaChangeError) as exc:
         crm.schema.propose([op])
     assert exc.value.code == "DOCUMENTATION_REQUIRED"
 
 
-@pytest.mark.parametrize("name", ["c_field1", "c_new_field", "c_data_2", "c_misc", "c_temp"])
+@pytest.mark.parametrize("name", ["c__field1", "c__new_field", "c__data_2", "c__misc", "c__temp"])
 def test_generic_field_names_are_rejected(crm, name):
     with pytest.raises(SchemaChangeError) as exc:
         crm.schema.propose([add("account", name, "text")])
@@ -104,7 +104,7 @@ def test_generic_field_names_are_rejected(crm, name):
 
 def test_generic_object_names_are_rejected(crm):
     with pytest.raises(SchemaChangeError) as exc:
-        crm.schema.propose([obj("c_table", "Table")])
+        crm.schema.propose([obj("c__table", "Table")])
     assert exc.value.code == "POOR_NAME"
 
 
@@ -118,11 +118,11 @@ def test_description_cannot_be_cleared_by_update(crm):
 
 def test_semantic_ref_must_be_a_uri(crm):
     with pytest.raises(SchemaChangeError) as exc:
-        crm.schema.propose([add("account", "c_region", "text", semantic_ref="region")])
+        crm.schema.propose([add("account", "c__region", "text", semantic_ref="region")])
     assert exc.value.code == "INVALID_SEMANTIC_REF"
-    apply(crm, [add("account", "c_region", "text", semantic_ref="https://schema.org/areaServed")])
+    apply(crm, [add("account", "c__region", "text", semantic_ref="https://schema.org/areaServed")])
     assert (
-        crm.snapshot().get_object("account").fields["c_region"].semantic_ref.endswith("areaServed")
+        crm.snapshot().get_object("account").fields["c__region"].semantic_ref.endswith("areaServed")
     )
 
 
@@ -132,7 +132,7 @@ def test_semantic_ref_must_be_a_uri(crm):
 def test_tenant_custom_fields_need_prefix_and_get_a_hint(crm):
     with pytest.raises(InvalidNameError) as exc:
         crm.schema.propose([add("account", "region", "text")])
-    assert "c_region" in exc.value.hint
+    assert "c__region" in exc.value.hint
 
 
 def test_tenant_cannot_retire_standard_field(crm):
@@ -161,7 +161,7 @@ def test_tenant_can_relabel_standard_field_and_add_picklist_value(crm):
 
 def test_tenants_cannot_create_protected_objects(crm):
     with pytest.raises(SchemaChangeError) as exc:
-        crm.schema.propose([obj("c_secret_rule", "Secret Rule", protected=True)])
+        crm.schema.propose([obj("c__secret_rule", "Secret Rule", protected=True)])
     assert exc.value.code == "NOT_ALLOWED"
 
 
@@ -180,7 +180,7 @@ def test_malformed_change_set_is_rejected_with_details(crm):
 
 def test_unknown_type_lists_allowed_types(crm):
     with pytest.raises(SchemaChangeError) as exc:
-        crm.schema.propose([add("account", "c_budget", "money")])
+        crm.schema.propose([add("account", "c__budget", "money")])
     assert "decimal" in exc.value.expected
 
 
@@ -188,19 +188,21 @@ def test_text_formats_and_numeric_bounds(crm):
     apply(
         crm,
         [
-            add("account", "c_home_currency", "text", options={"format": "currency_code"}),
-            add("account", "c_risk_score", "integer", options={"min": 1, "max": 10}),
+            add("account", "c__home_currency", "text", options={"format": "currency_code"}),
+            add("account", "c__risk_score", "integer", options={"min": 1, "max": 10}),
         ],
     )
     with pytest.raises(Exception) as exc:
-        crm.records.create("account", {"name": "A", "c_home_currency": "usd"})
+        crm.records.create("account", {"name": "A", "c__home_currency": "usd"})
     assert exc.value.code == "VALIDATION_FAILED"
     with pytest.raises(RecordValidationError):
-        crm.records.create("account", {"name": "A", "c_risk_score": 11})
-    rec = crm.records.create("account", {"name": "A", "c_home_currency": "EUR", "c_risk_score": 3})
-    assert rec["c_home_currency"] == "EUR"
+        crm.records.create("account", {"name": "A", "c__risk_score": 11})
+    rec = crm.records.create(
+        "account", {"name": "A", "c__home_currency": "EUR", "c__risk_score": 3}
+    )
+    assert rec["c__home_currency"] == "EUR"
     with pytest.raises(SchemaChangeError):
-        crm.schema.propose([add("account", "c_bad_format", "text", options={"format": "regex"})])
+        crm.schema.propose([add("account", "c__bad_format", "text", options={"format": "regex"})])
 
 
 def test_unique_together(crm):
@@ -208,58 +210,62 @@ def test_unique_together(crm):
         crm,
         [
             obj(
-                "c_account_rating",
+                "c__account_rating",
                 "Account Rating",
                 [
-                    fld("c_rated_account", "lookup", options={"target": "account"}, required=True),
-                    fld("c_rating_year", "integer", required=True),
-                    fld("c_rating_grade", "text"),
+                    fld("c__rated_account", "lookup", options={"target": "account"}, required=True),
+                    fld("c__rating_year", "integer", required=True),
+                    fld("c__rating_grade", "text"),
                 ],
-                unique_together=[["c_rated_account", "c_rating_year"]],
+                unique_together=[["c__rated_account", "c__rating_year"]],
             )
         ],
     )
     acme = crm.records.create("account", {"name": "Acme"})
-    crm.records.create("c_account_rating", {"c_rated_account": acme["id"], "c_rating_year": 2026})
-    crm.records.create("c_account_rating", {"c_rated_account": acme["id"], "c_rating_year": 2027})
+    crm.records.create(
+        "c__account_rating", {"c__rated_account": acme["id"], "c__rating_year": 2026}
+    )
+    crm.records.create(
+        "c__account_rating", {"c__rated_account": acme["id"], "c__rating_year": 2027}
+    )
     with pytest.raises(Exception) as exc:
         crm.records.create(
-            "c_account_rating", {"c_rated_account": acme["id"], "c_rating_year": 2026}
+            "c__account_rating", {"c__rated_account": acme["id"], "c__rating_year": 2026}
         )
     assert exc.value.code == "UNIQUE_VIOLATION"
-    assert exc.value.details["fields"] == ["c_rated_account", "c_rating_year"]
+    assert exc.value.details["fields"] == ["c__rated_account", "c__rating_year"]
 
 
 def test_required_field_on_populated_object_is_blocked_without_default(crm):
     account = crm.records.create("account", {"name": "Acme"})
-    proposal = crm.schema.propose([add("account", "c_tier", "text", required=True)])
+    proposal = crm.schema.propose([add("account", "c__tier", "text", required=True)])
     assert not proposal.can_apply
     assert proposal.blockers[0]["records"] == 1
     with pytest.raises(SchemaChangeError) as exc:
         crm.schema.apply(proposal.id, diff_hash=proposal.diff_hash)
     assert exc.value.code == "CHANGE_SET_BLOCKED"
-    apply(crm, [add("account", "c_tier", "text", required=True, default="standard")])
-    assert crm.records.get("account", account["id"])["c_tier"] == "standard"
+    apply(crm, [add("account", "c__tier", "text", required=True, default="standard")])
+    assert crm.records.get("account", account["id"])["c__tier"] == "standard"
 
 
 def test_unique_field_on_existing_object_builds_index_after_commit(crm):
     crm.records.create("account", {"name": "Acme"})
-    result = apply(crm, [add("account", "c_customer_code", "text", unique=True)])
+    result = apply(crm, [add("account", "c__customer_code", "text", unique=True)])
     assert result.post_apply[0]["status"] == "active"
     indexes = crm.conn.execute(
         "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname LIKE 'ux_%%'",
         (crm.tenant.schema,),
     ).fetchall()
-    assert any("c_customer_code" in row[0] and "UNIQUE" in row[0] for row in indexes)
+    assert any("c__customer_code" in row[0] and "UNIQUE" in row[0] for row in indexes)
 
 
 def test_agent_cannot_approve_schema_changes(agent, admin):
-    proposal = agent.schema.propose([add("account", "c_region", "text")])
+    proposal = agent.schema.propose([add("account", "c__region", "text")])
     with pytest.raises(ApprovalError) as exc:
         agent.schema.apply(proposal.id, diff_hash=proposal.diff_hash)
     assert exc.value.code == "APPROVAL_REQUIRES_HUMAN"
     agent.as_principal(admin).schema.apply(proposal.id, diff_hash=proposal.diff_hash)
-    assert "c_region" in agent.snapshot().get_object("account").active_fields
+    assert "c__region" in agent.snapshot().get_object("account").active_fields
 
 
 def test_diff_hash_must_match(crm):
@@ -296,18 +302,18 @@ def test_change_set_cannot_be_applied_twice(crm):
 
 
 def test_retiring_object_referenced_by_lookup_is_blocked(crm):
-    apply(crm, [obj("c_project", "Project")])
-    apply(crm, [add("account", "c_main_project", "lookup", options={"target": "c_project"})])
-    proposal = crm.schema.propose([{"op": "retire_object", "object": "c_project"}])
+    apply(crm, [obj("c__project", "Project")])
+    apply(crm, [add("account", "c__main_project", "lookup", options={"target": "c__project"})])
+    proposal = crm.schema.propose([{"op": "retire_object", "object": "c__project"}])
     assert not proposal.can_apply
-    assert proposal.blockers[0]["fields"] == ["account.c_main_project"]
+    assert proposal.blockers[0]["fields"] == ["account.c__main_project"]
 
 
 def test_retired_names_cannot_be_reused(crm):
-    apply(crm, [add("account", "c_legacy_code", "text")])
-    apply(crm, [{"op": "retire_field", "object": "account", "field": "c_legacy_code"}])
+    apply(crm, [add("account", "c__legacy_code", "text")])
+    apply(crm, [{"op": "retire_field", "object": "account", "field": "c__legacy_code"}])
     with pytest.raises(SchemaChangeError) as exc:
-        crm.schema.propose([add("account", "c_legacy_code", "text")])
+        crm.schema.propose([add("account", "c__legacy_code", "text")])
     assert exc.value.code == "FIELD_EXISTS"
 
 
@@ -345,8 +351,8 @@ def test_field_limit(crm, monkeypatch):
 
     current = len(crm.snapshot().get_object("account").fields)
     monkeypatch.setattr(changesets, "MAX_FIELDS_PER_OBJECT", current + 1)
-    apply(crm, [add("account", "c_first_extra", "text")])
-    apply(crm, [{"op": "retire_field", "object": "account", "field": "c_first_extra"}])
+    apply(crm, [add("account", "c__first_extra", "text")])
+    apply(crm, [{"op": "retire_field", "object": "account", "field": "c__first_extra"}])
     with pytest.raises(SchemaChangeError) as exc:  # retired fields still count
-        crm.schema.propose([add("account", "c_second_extra", "text")])
+        crm.schema.propose([add("account", "c__second_extra", "text")])
     assert exc.value.code == "FIELD_LIMIT_REACHED"

@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from .errors import SchemaChangeError
+from .identifiers import CUSTOM_PREFIX
 
 MIN_DESCRIPTION_LENGTH = 20
 MIN_DESCRIPTION_WORDS = 4
@@ -37,13 +38,13 @@ _SEMANTIC_REF = re.compile(r"^https?://[^\s]+$")
 
 
 def _humanize(api_name: str) -> str:
-    name = api_name[2:] if api_name.startswith("c_") else api_name
+    name = api_name.removeprefix(CUSTOM_PREFIX)
     return name.replace("_", " ").strip().lower()
 
 
 def check_name_quality(api_name: str, *, kind: str, where: str) -> None:
-    """Reject names made only of generic words and numbers (c_field1, c_new_data)."""
-    core = api_name[2:] if api_name.startswith("c_") else api_name
+    """Reject names made only of generic words and numbers (c__field1, c__new_data)."""
+    core = api_name.removeprefix(CUSTOM_PREFIX)
     tokens = re.findall(r"[a-z]+|\d+", core)
     meaningful = [t for t in tokens if not t.isdigit() and t not in _GENERIC_WORDS]
     if not meaningful:
@@ -51,8 +52,8 @@ def check_name_quality(api_name: str, *, kind: str, where: str) -> None:
             f"{where}: {api_name!r} does not say what the {kind} holds.",
             code="POOR_NAME",
             field="api_name",
-            hint=f"Name the {kind} after its meaning, e.g. 'c_contract_end_date' rather than "
-            "'c_field2'.",
+            hint=f"Name the {kind} after its meaning, e.g. 'c__contract_end_date' rather than "
+            "'c__field2'.",
         )
 
 
@@ -110,7 +111,7 @@ def field_advice(
             f"Field {api_name!r} has no semantic_ref. If a standard term exists (for example "
             "on schema.org), linking it helps AI and integrations interpret the field."
         )
-    if type_ == "boolean" and not re.match(r"^(c_)?(is|has|can|should|allow|needs)_", api_name):
+    if type_ == "boolean" and not re.match(r"^(c__)?(is|has|can|should|allow|needs)_", api_name):
         advice.append(
             f"Boolean field {api_name!r}: names like 'is_…' or 'has_…' make true/false "
             "meaning unambiguous."

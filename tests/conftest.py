@@ -30,7 +30,11 @@ def conn() -> Iterator[psycopg.Connection]:
     try:
         connection = psycopg.connect(DATABASE_URL, autocommit=True)
     except psycopg.OperationalError as exc:  # pragma: no cover - environment problem
-        pytest.skip(f"PostgreSQL not available at {DATABASE_URL}: {exc}")
+        # Fail loudly: silently skipping database tests would report a green run that
+        # tested almost nothing. Set OSIER_ALLOW_NO_DB=1 to skip them on purpose.
+        if os.environ.get("OSIER_ALLOW_NO_DB") == "1":
+            pytest.skip(f"PostgreSQL not available at {DATABASE_URL}: {exc}")
+        pytest.fail(f"PostgreSQL not available at {DATABASE_URL}: {exc}", pytrace=False)
     with connection:
         yield connection
 
@@ -78,7 +82,7 @@ def agent(crm: Session) -> Session:
 
 def fld(api_name: str, type: str, **kwargs: Any) -> dict[str, Any]:
     """A documented field spec for tests."""
-    label = api_name.removeprefix("c_").replace("_", " ").title()
+    label = api_name.removeprefix("c__").replace("_", " ").title()
     return {
         "api_name": api_name,
         "label": label,

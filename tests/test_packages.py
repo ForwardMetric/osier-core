@@ -119,11 +119,11 @@ def test_uninstall_blocked_by_dependent_package(session):
 
 
 def test_uninstall_blocked_by_custom_lookup(crm):
-    apply(crm, [obj("c_loan", "Loan")])
-    apply(crm, [add("c_loan", "c_borrower", "lookup", options={"target": "account"})])
+    apply(crm, [obj("c__loan", "Loan")])
+    apply(crm, [add("c__loan", "c__borrower", "lookup", options={"target": "account"})])
     proposal = crm.packages.propose_uninstall("crm")
     assert not proposal.can_apply
-    assert "c_loan.c_borrower" in proposal.blockers[0]["fields"]
+    assert "c__loan.c__borrower" in proposal.blockers[0]["fields"]
 
 
 def test_core_cannot_be_uninstalled(session):
@@ -133,8 +133,8 @@ def test_core_cannot_be_uninstalled(session):
 
 
 def test_tenants_can_extend_package_objects(crm):
-    apply(crm, [add("opportunity", "c_competitor_name", "text")])
-    assert "c_competitor_name" in crm.snapshot().get_object("opportunity").active_fields
+    apply(crm, [add("opportunity", "c__competitor_name", "text")])
+    assert "c__competitor_name" in crm.snapshot().get_object("opportunity").active_fields
 
 
 @pytest.mark.parametrize("name", sorted(REGISTRY))

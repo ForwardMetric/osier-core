@@ -17,7 +17,7 @@ Implemented:
   - picklist values, defaults, required, unique and indexed fields, history tracking
   - blockers for data conflicts (e.g. required field on populated object)
   - concurrent index builds after commit for existing tables
-  - standard items protected from tenant changes; `c_` prefix for custom items
+  - standard items protected from tenant changes; `c__` prefix for custom items
 - Records: create, get, list (equality filters), update, retire
   - validation generated from metadata, structured errors for agents
   - optimistic concurrency (`row_version`), idempotency keys
@@ -47,23 +47,36 @@ import psycopg
 from osier import Session, bootstrap_tenant
 
 conn = psycopg.connect("postgresql://osier:osier@localhost:5432/osier_test", autocommit=True)
-boot = bootstrap_tenant(conn, organization_name="Acme Lending",
-                        admin_email="ada@acme.test", admin_display_name="Ada Lovelace")
+boot = bootstrap_tenant(
+    conn,
+    organization_name="Acme Lending",
+    admin_email="ada@acme.test",
+    admin_display_name="Ada Lovelace",
+)
 admin = Session(conn, boot.tenant, boot.admin)
 
 install = admin.packages.propose_install(["case_management"])  # adds crm automatically
 admin.packages.apply(install.id, diff_hash=install.diff_hash)
 
-proposal = admin.schema.propose([
-    {"op": "add_field", "object": "account",
-     "field": {"api_name": "c_region", "label": "Sales Region", "type": "picklist",
-               "description": "Sales region responsible for the account, used for territory reporting.",
-               "options": {"values": ["emea", "amer", "apac"]}}},
-])
+proposal = admin.schema.propose(
+    [
+        {
+            "op": "add_field",
+            "object": "account",
+            "field": {
+                "api_name": "c__region",
+                "label": "Sales Region",
+                "type": "picklist",
+                "description": "Sales region responsible for the account, used for territory reporting.",
+                "options": {"values": ["emea", "amer", "apac"]},
+            },
+        },
+    ]
+)
 print(proposal.summary, proposal.ddl, proposal.blockers, proposal.impact)
 admin.schema.apply(proposal.id, diff_hash=proposal.diff_hash)
 
-acme = admin.records.create("account", {"name": "Acme", "c_region": "emea"})
+acme = admin.records.create("account", {"name": "Acme", "c__region": "emea"})
 ```
 ## License
 

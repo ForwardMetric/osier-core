@@ -22,13 +22,13 @@ def test_tenants_have_independent_schemas(conn, crm):
                 {
                     "op": "add_field",
                     "object": "account",
-                    "field": fld("c_region", "text"),
+                    "field": fld("c__region", "text"),
                 }
             ]
         )
         crm.schema.apply(proposal.id, diff_hash=proposal.diff_hash)
-        assert "c_region" in crm.snapshot().get_object("account").active_fields
-        assert "c_region" not in other.snapshot().get_object("account").fields
+        assert "c__region" in crm.snapshot().get_object("account").active_fields
+        assert "c__region" not in other.snapshot().get_object("account").fields
     finally:
         drop_tenant(conn, other_tenant)
 

@@ -104,7 +104,7 @@ Schema-per-tenant has two known failure modes. Both are designed out:
    connection pooling, a session-level `SET search_path` can carry over to the
    next tenant's transaction on the same server connection. **Rule: the engine
    never relies on `search_path`.** All SQL is generated with fully qualified
-   names (`"t_7f3a…"."c_loan"`). Hand-written SQL that uses unqualified names
+   names (`"t_7f3a…"."c__loan"`). Hand-written SQL that uses unqualified names
    is rejected in review and by a test.
 2. **Defense in depth with database roles.** Each tenant schema has its own
    database role with privileges only on that schema. Each transaction runs
@@ -192,9 +192,13 @@ EspoCRM all compile metadata to real tables.
   or AI input. They must match `^[a-z][a-z0-9_]{0,47}$`, must not be reserved
   words, and are always quoted by the SQL layer. User-supplied strings are never
   interpolated into SQL.
-- **Namespacing:** custom objects and fields get a `c_` prefix
-  (`c_net_worth_statement`, `c_region`). Platform upgrades can therefore add
+- **Namespacing:** custom objects and fields get a `c__` prefix
+  (`c__net_worth_statement`, `c__region`). Platform upgrades can therefore add
   standard fields without colliding with tenant customizations.
+- **Platform-owned names never look custom:** standard objects, standard
+  fields, system columns, and engine tables may not start with `c_` and may
+  never contain `__`. A test checks every system column, engine table, and
+  package definition against this rule.
 
 ### 4.3 Field limit
 
@@ -259,7 +263,7 @@ platform packages and tenants alike:
   the label or name are rejected (`DOCUMENTATION_REQUIRED`,
   `DOCUMENTATION_TOO_THIN`). Descriptions cannot be cleared later.
 - **Names must say what they hold.** Names made only of generic words and
-  numbers (`c_field1`, `c_new_data`, `c_misc`) are rejected (`POOR_NAME`).
+  numbers (`c__field1`, `c__new_data`, `c__misc`) are rejected (`POOR_NAME`).
 - **Ontology links.** Objects and fields may carry a `semantic_ref`: the URI
   of an ontology term, normally schema.org (e.g.
   `https://schema.org/givenName`). Platform packages use schema.org wherever
@@ -291,7 +295,7 @@ upgrade, go through **change sets**.
 3. **Impact analysis.** The engine runs the change against existing data and
    reports concrete effects, e.g. *"Making `employer_name` required: 1,243
    records have no value — provide a default or backfill"*, or *"Changing
-   `c_risk_score` from text to integer: 17 values will not convert."*
+   `c__risk_score` from text to integer: 17 values will not convert."*
 4. **Confirm.** A human with the right permission approves the exact diff,
    generated DDL, and impact report (§10.2). Optionally, a second approver for
    production tenants.
@@ -383,7 +387,7 @@ language that the engine compiles to SQL:
 ```json
 {
   "object": "opportunity",
-  "fields": ["name", "amount", "account.name", "account.c_region"],
+  "fields": ["name", "amount", "account.name", "account.c__region"],
   "filters": [{"field": "close_date", "op": ">=", "value": "2026-01-01"}],
   "order_by": [{"field": "amount", "dir": "desc"}],
   "limit": 100
@@ -545,7 +549,7 @@ design.
   labels, help text, picklist values, required (subject to §5.3), and history
   tracking. They may **not** change types, physical names, or retire standard
   fields.
-- **Custom** objects and fields (`c_` prefix) are tenant-owned.
+- **Custom** objects and fields (`c__` prefix) are tenant-owned.
 - Tenants may add custom fields to standard objects.
 
 ### 11.2 Packages (standard objects as plugins)
@@ -580,7 +584,7 @@ Rules:
   blocked by tenant lookups that still point at those objects. Reinstalling a
   previously uninstalled package is not supported yet.
 - **Platform packages only.** Third-party packages are out of scope for now.
-- Package objects are standard-owned; tenants may extend them with `c_` fields.
+- Package objects are standard-owned; tenants may extend them with `c__` fields.
 - **Upgrades** (a new package version) will run as change sets with
   `source = upgrade` (§11.3).
 

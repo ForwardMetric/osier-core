@@ -75,19 +75,19 @@ def test_email_and_datetime_types(crm):
             {
                 "op": "add_field",
                 "object": "contact",
-                "field": fld("c_last_call", "datetime"),
+                "field": fld("c__last_call", "datetime"),
             }
         ],
     )
     with pytest.raises(RecordValidationError):
         crm.records.create("contact", {"family_name": "Doe", "email": "not-an-email"})
     with pytest.raises(RecordValidationError):  # time zone required
-        crm.records.create("contact", {"family_name": "Doe", "c_last_call": "2026-01-01T09:00:00"})
+        crm.records.create("contact", {"family_name": "Doe", "c__last_call": "2026-01-01T09:00:00"})
     contact = crm.records.create(
         "contact",
-        {"family_name": "Doe", "email": "jane@example.com", "c_last_call": "2026-01-01T09:00:00Z"},
+        {"family_name": "Doe", "email": "jane@example.com", "c__last_call": "2026-01-01T09:00:00Z"},
     )
-    assert contact["c_last_call"].startswith("2026-01-01T09:00:00")
+    assert contact["c__last_call"].startswith("2026-01-01T09:00:00")
 
 
 def test_lookup_must_point_to_active_record(crm, acme):
@@ -173,15 +173,15 @@ def test_unique_violation_is_reported_on_the_field(crm):
             {
                 "op": "add_field",
                 "object": "account",
-                "field": fld("c_code", "text", unique=True),
+                "field": fld("c__code", "text", unique=True),
             }
         ],
     )
-    first = crm.records.create("account", {"name": "A", "c_code": "X1"})
+    first = crm.records.create("account", {"name": "A", "c__code": "X1"})
     with pytest.raises(IntegrityError) as exc:
-        crm.records.create("account", {"name": "B", "c_code": "X1"})
+        crm.records.create("account", {"name": "B", "c__code": "X1"})
     assert exc.value.code == "UNIQUE_VIOLATION"
-    assert exc.value.field == "c_code"
+    assert exc.value.field == "c__code"
     assert exc.value.details["existing_record_id"] == first["id"]
 
 
@@ -225,11 +225,11 @@ def test_retire_restrict_blocks(crm, acme):
         crm,
         [
             obj(
-                "c_loan",
+                "c__loan",
                 "Loan",
                 [
                     fld(
-                        "c_borrower",
+                        "c__borrower",
                         "lookup",
                         options={"target": "account", "on_delete": "restrict"},
                     )
@@ -237,7 +237,7 @@ def test_retire_restrict_blocks(crm, acme):
             )
         ],
     )
-    crm.records.create("c_loan", {"c_borrower": acme["id"]})
+    crm.records.create("c__loan", {"c__borrower": acme["id"]})
     with pytest.raises(IntegrityError) as exc:
         crm.records.retire("account", acme["id"], expected_row_version=1)
     assert exc.value.code == "RECORD_HAS_DEPENDENTS"
@@ -258,15 +258,15 @@ def test_retired_fields_are_hidden_and_rejected(crm, acme):
             {
                 "op": "add_field",
                 "object": "account",
-                "field": fld("c_old", "text"),
+                "field": fld("c__old", "text"),
             }
         ],
     )
-    crm.records.update("account", acme["id"], {"c_old": "v"}, expected_row_version=1)
-    apply(crm, [{"op": "retire_field", "object": "account", "field": "c_old"}])
-    assert "c_old" not in crm.records.get("account", acme["id"])
+    crm.records.update("account", acme["id"], {"c__old": "v"}, expected_row_version=1)
+    apply(crm, [{"op": "retire_field", "object": "account", "field": "c__old"}])
+    assert "c__old" not in crm.records.get("account", acme["id"])
     with pytest.raises(RecordValidationError) as exc:
-        crm.records.update("account", acme["id"], {"c_old": "w"}, expected_row_version=2)
+        crm.records.update("account", acme["id"], {"c__old": "w"}, expected_row_version=2)
     assert exc.value.details["errors"][0]["code"] == "FIELD_RETIRED"
 
 
@@ -280,21 +280,21 @@ def test_unknown_object_lists_available(crm):
 def test_new_field_is_usable_immediately_by_other_sessions(crm, tenant, acme, admin):
     with psycopg.connect(DATABASE_URL, autocommit=True) as other_conn:
         other = Session(other_conn, tenant, admin)
-        assert "c_region" not in other.records.get("account", acme["id"])
+        assert "c__region" not in other.records.get("account", acme["id"])
         apply(
             crm,
             [
                 {
                     "op": "add_field",
                     "object": "account",
-                    "field": fld("c_region", "text"),
+                    "field": fld("c__region", "text"),
                 }
             ],
         )
         updated = other.records.update(
-            "account", acme["id"], {"c_region": "EMEA"}, expected_row_version=1
+            "account", acme["id"], {"c__region": "EMEA"}, expected_row_version=1
         )
-        assert updated["c_region"] == "EMEA"
+        assert updated["c__region"] == "EMEA"
 
 
 def test_concurrent_updates_one_wins(crm, tenant, acme, admin):
