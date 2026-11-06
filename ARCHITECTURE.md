@@ -595,8 +595,42 @@ admin role assignment.
    warnings and blockers.
 2. **Canary tenants** first, then rolling batches.
 3. **Version policy:** no tenant more than one platform version behind.
-4. Platform migrations (engine tables, standard objects) use Alembic. Tenant
-   customizations never use hand-written migrations; they are change sets.
+4. Platform migrations (engine tables) use Alembic. Standard objects are
+   upgraded through package versions (§11.4), and tenant customizations through
+   change sets; neither uses hand-written migrations.
+
+### 11.4 Package catalog in the database (planned for M5)
+
+Goal: roll out new or changed **standard** objects with a database update
+instead of a code deployment. Decided:
+
+- **Catalog as data.** Each package version's full definition is stored as
+  JSON in a platform catalog (`catalog_packages`: name, version, status
+  draft → published → deprecated, definition, checksum, published_by).
+  Published versions are immutable.
+- **Authored in git, published to the database.** Package files in
+  `src/osier/packages/` stay the reviewed source of truth; a publish command
+  loads a reviewed version into the catalog. Publishing needs no deployment.
+- **Materialized by the engine, not by a database trigger.** A trigger would
+  bypass approval and the change-set record, duplicate the validation rules
+  in PL/pgSQL, cannot run `CREATE INDEX CONCURRENTLY`, and cannot reach tenant
+  databases from the control-plane database. Instead, publishing marks a
+  version pending and a materializer (woken by `LISTEN/NOTIFY` or the job
+  queue) creates upgrade change sets for every tenant with that package.
+- **Upgrades are computed diffs** between the installed and the new version.
+  **Additive changes apply automatically** (new objects, new fields, new
+  picklist values, label and description changes), recorded with
+  `source = upgrade`. Unsafe differences (type changes, removals) are refused
+  and need a separate, explicit migration plan.
+- The package tamper check (§11.2) compares against the catalog instead of the
+  in-code registry.
+- **Tenant-defined objects are not part of this.** They are created only
+  through tenant change sets with human approval (§5).
+- **Limit:** "no deployment" holds only while new definitions use existing
+  engine capabilities. New field types or behaviours still need a release.
+
+Timing: built with the control plane in M5, because the catalog belongs in the
+control-plane database and there are no production tenants to roll out to yet.
 
 ---
 
@@ -702,7 +736,7 @@ the implementation is written from first principles.
 | **M2 — MCP server** | Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
-| **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis. |
+| **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.4). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
 | **M7 — Jobs & agent workflows** | Metadata-driven job types; durable agent workflows; tool trial (§12.3); MCP job tools; workflows as metadata (§12.2). |
 
