@@ -98,7 +98,8 @@ with every request and never assumes a fixed location.
 
 ### 3.1 Safety rules for shared databases
 
-Schema-per-tenant has two known failure modes. Both are designed out:
+Schema-per-tenant has two known failure modes. Both are designed out, and a
+central check in code enforces the rules on every statement:
 
 1. **Cross-tenant leaks through `search_path`.** With transaction-mode
    connection pooling, a session-level `SET search_path` can carry over to the
@@ -111,6 +112,16 @@ Schema-per-tenant has two known failure modes. Both are designed out:
    `SET LOCAL ROLE <tenant_role>` (transaction-scoped, so safe with pooling).
    A bug that targets the wrong schema then fails with a permission error
    instead of reading another tenant's data.
+3. **One central checkpoint in code.** Every engine service gets a
+   `TenantConnection` (`src/osier/db.py`), never a raw connection. Before any
+   statement runs it checks that the SQL is composed with `psycopg.sql` (no
+   plain strings), that every schema-qualified identifier names the session's
+   own tenant schema (three-part names rejected), and that literal SQL
+   fragments contain no quoted or dotted names that could smuggle in another
+   schema. A violation raises `TENANT_ISOLATION_VIOLATION`, which always
+   indicates a bug. Tenant schemas keep their current layout (engine tables
+   and object tables together); per-tenant database roles (point 2) are added
+   in M5 as a second layer.
 
 ### 3.2 Scaling shared databases
 

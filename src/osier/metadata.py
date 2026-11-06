@@ -8,11 +8,11 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
 
-import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
 from .context import Tenant
+from .db import TenantConnection
 from .errors import NotFoundError
 from .fieldtypes import REGISTRY, FieldType
 from .identifiers import Owner
@@ -186,7 +186,7 @@ class MetadataRegistry:
     _cache: dict[tuple[str, int], SchemaSnapshot] = {}
     _lock = threading.Lock()
 
-    def __init__(self, conn: psycopg.Connection, tenant: Tenant) -> None:
+    def __init__(self, conn: TenantConnection, tenant: Tenant) -> None:
         self._conn = conn
         self._tenant = tenant
 

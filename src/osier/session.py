@@ -8,6 +8,7 @@ import psycopg
 
 from .changesets import SchemaService
 from .context import Principal, Tenant
+from .db import TenantConnection
 from .metadata import MetadataRegistry, SchemaSnapshot
 from .records import RecordService
 
@@ -22,21 +23,24 @@ class Session:
     itself, and some schema operations (concurrent index builds) cannot run inside
     a transaction.
 
-    The session sets an empty ``search_path`` so that any SQL referring to a table
-    without its tenant schema fails loudly instead of silently reaching the wrong
-    schema (ARCHITECTURE.md §3.1).
+    All database access goes through a ``TenantConnection``, the central check that
+    every statement stays inside this tenant's schema (ARCHITECTURE.md §3.1).
     """
 
-    def __init__(self, conn: psycopg.Connection, tenant: Tenant, principal: Principal) -> None:
-        if not conn.autocommit:
-            raise ValueError("The connection must be in autocommit mode.")
-        conn.execute("SET search_path TO ''")
-        self.conn = conn
+    def __init__(
+        self, conn: psycopg.Connection | TenantConnection, tenant: Tenant, principal: Principal
+    ) -> None:
+        guarded = conn if isinstance(conn, TenantConnection) else TenantConnection(conn, tenant)
+        if guarded.tenant != tenant:
+            raise ValueError("The connection belongs to a different tenant.")
+        # The only connection engine services ever see: every statement is checked
+        # against this tenant before it runs (see db.py).
+        self.conn = guarded
         self.tenant = tenant
         self.principal = principal
-        self.metadata = MetadataRegistry(conn, tenant)
-        self.schema = SchemaService(conn, tenant, principal)
-        self.records = RecordService(conn, tenant, principal)
+        self.metadata = MetadataRegistry(guarded, tenant)
+        self.schema = SchemaService(guarded, tenant, principal)
+        self.records = RecordService(guarded, tenant, principal)
 
     @property
     def packages(self) -> PackageService:

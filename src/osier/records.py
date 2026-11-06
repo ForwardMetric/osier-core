@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
 from pydantic import ValidationError as PydanticValidationError
 
 from .context import Principal, Tenant
+from .db import TenantConnection
 from .errors import (
     ApprovalError,
     ConflictError,
@@ -152,7 +153,7 @@ def _validation_error(
 
 
 class RecordService:
-    def __init__(self, conn: psycopg.Connection, tenant: Tenant, principal: Principal) -> None:
+    def __init__(self, conn: TenantConnection, tenant: Tenant, principal: Principal) -> None:
         self._conn = conn
         self._tenant = tenant
         self._principal = principal

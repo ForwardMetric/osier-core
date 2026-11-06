@@ -248,11 +248,11 @@ def test_required_field_on_populated_object_is_blocked_without_default(crm):
     assert crm.records.get("account", account["id"])["c__tier"] == "standard"
 
 
-def test_unique_field_on_existing_object_builds_index_after_commit(crm):
+def test_unique_field_on_existing_object_builds_index_after_commit(crm, conn):
     crm.records.create("account", {"name": "Acme"})
     result = apply(crm, [add("account", "c__customer_code", "text", unique=True)])
     assert result.post_apply[0]["status"] == "active"
-    indexes = crm.conn.execute(
+    indexes = conn.execute(
         "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname LIKE 'ux_%%'",
         (crm.tenant.schema,),
     ).fetchall()
@@ -277,14 +277,14 @@ def test_diff_hash_must_match(crm):
     assert exc.value.code == "DIFF_HASH_MISMATCH"
 
 
-def test_stale_proposal_is_superseded(crm):
+def test_stale_proposal_is_superseded(crm, conn):
     first = crm.schema.propose([{"op": "update_object", "object": "account", "label": "A"}])
     second = crm.schema.propose([{"op": "update_object", "object": "contact", "label": "C"}])
     crm.schema.apply(first.id, diff_hash=first.diff_hash)
     with pytest.raises(SchemaChangeError) as exc:
         crm.schema.apply(second.id, diff_hash=second.diff_hash)
     assert exc.value.code == "CHANGE_SET_STALE"
-    status = crm.conn.execute(
+    status = conn.execute(
         sql.SQL("SELECT status FROM {} WHERE id = %s").format(
             sql.Identifier(crm.tenant.schema, "meta_change_sets")
         ),
@@ -333,11 +333,11 @@ def test_unknown_change_set(crm):
     assert exc.value.code == "CHANGE_SET_NOT_FOUND"
 
 
-def test_agent_proposals_are_attributed(agent):
+def test_agent_proposals_are_attributed(agent, conn):
     proposal = agent.schema.propose(
         [{"op": "update_object", "object": "account", "label": "Customer"}]
     )
-    row = agent.conn.execute(
+    row = conn.execute(
         sql.SQL(
             "SELECT proposed_by, proposed_by_type, proposed_by_agent FROM {} WHERE id = %s"
         ).format(sql.Identifier(agent.tenant.schema, "meta_change_sets")),

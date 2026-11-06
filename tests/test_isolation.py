@@ -33,10 +33,10 @@ def test_tenants_have_independent_schemas(conn, crm):
         drop_tenant(conn, other_tenant)
 
 
-def test_session_disables_search_path(crm):
-    # Unqualified table names must fail rather than reach some schema by accident.
+def test_session_disables_search_path(crm, conn):
+    # Even raw SQL on the session's connection cannot resolve unqualified table names.
     with pytest.raises(psycopg.errors.UndefinedTable):
-        crm.conn.execute("SELECT * FROM account")
+        conn.execute("SELECT * FROM account")
 
 
 def test_connection_must_be_autocommit(tenant, admin):

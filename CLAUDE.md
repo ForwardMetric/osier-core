@@ -19,6 +19,7 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/metadata.py` — versioned metadata snapshots and cache
 - `src/osier/changesets.py` — schema change sets: propose / validate / impact / apply
 - `src/osier/records.py` — record create / read / update / retire, history, provenance
+- `src/osier/db.py` — `TenantConnection`: the central check every statement passes through
 - `src/osier/session.py` — tenant + principal scoped entry point
 - `src/osier/design.py` — design rules: required documentation, naming quality, ontology refs
 - `src/osier/packages/` — installable standard-object packages (core, crm, case_management)
@@ -32,6 +33,8 @@ uv run ruff check . && uv run ruff format --check .
    put user, AI, or record data into SQL text.
 2. **Always qualify tables with the tenant schema** (`sql.Identifier(schema, table)`).
    Sessions set an empty `search_path`, so unqualified names fail by design.
+   Engine services only ever use the session's `TenantConnection` (`db.py`), which
+   checks every statement; never pass a raw psycopg connection into a service.
 3. **Schema changes only through change sets.** No hand-written DDL for tenant
    objects. Platform changes use `source="platform"` and the system principal.
 4. **Record writes only through `RecordService`**, so validation, history,

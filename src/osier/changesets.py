@@ -23,6 +23,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from . import design
 from .context import ActorType, Principal, Tenant
+from .db import TenantConnection
 from .errors import ApprovalError, InvalidNameError, NotFoundError, SchemaChangeError
 from .fieldtypes import (
     REGISTRY,
@@ -244,7 +245,7 @@ _ON_DELETE_SQL = {
 class _Planner:
     def __init__(
         self,
-        conn: psycopg.Connection,
+        conn: TenantConnection,
         snapshot: SchemaSnapshot,
         change_set_id: uuid.UUID,
         source: str,
@@ -988,7 +989,7 @@ def _default_literal(f: _WField) -> sql.Composable:
 
 
 def _plan(
-    conn: psycopg.Connection,
+    conn: TenantConnection,
     snapshot: SchemaSnapshot,
     change_set_id: uuid.UUID,
     source: str,
@@ -1068,7 +1069,7 @@ def _diff_hash(
 
 
 class SchemaService:
-    def __init__(self, conn: psycopg.Connection, tenant: Tenant, principal: Principal) -> None:
+    def __init__(self, conn: TenantConnection, tenant: Tenant, principal: Principal) -> None:
         self._conn = conn
         self._tenant = tenant
         self._principal = principal
@@ -1094,7 +1095,7 @@ class SchemaService:
         snapshot = self._registry.snapshot()
         plan = _plan(self._conn, snapshot, change_set_id, source, ops)
         diff_hash = _diff_hash(change_set_id, snapshot.version, op_dicts)
-        ddl = [s.as_string(self._conn) for s in plan.ddl]
+        ddl = [self._conn.render(s) for s in plan.ddl]
 
         self._conn.execute(
             sql.SQL(

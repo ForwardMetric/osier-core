@@ -13,11 +13,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-import psycopg
 from psycopg import sql
 
 from ..changesets import ApplyResult, Proposal, parse_operations
 from ..context import Principal, Tenant
+from ..db import TenantConnection
 from ..errors import NotFoundError, SchemaChangeError
 from ..metadata import SchemaSnapshot
 from . import case_management, core, crm
@@ -85,7 +85,7 @@ def get_package(name: str) -> Package:
     return package
 
 
-def _package_states(conn: psycopg.Connection, tenant: Tenant) -> dict[str, str]:
+def _package_states(conn: TenantConnection, tenant: Tenant) -> dict[str, str]:
     rows = conn.execute(
         sql.SQL("SELECT package, status FROM {}").format(
             sql.Identifier(tenant.schema, "meta_packages")
@@ -95,7 +95,7 @@ def _package_states(conn: psycopg.Connection, tenant: Tenant) -> dict[str, str]:
 
 
 def verify_package_operations(
-    conn: psycopg.Connection, snapshot: SchemaSnapshot, operations: list[Any]
+    conn: TenantConnection, snapshot: SchemaSnapshot, operations: list[Any]
 ) -> None:
     """Check a package change set against the registry and the installed packages."""
     states = _package_states(conn, snapshot.tenant)

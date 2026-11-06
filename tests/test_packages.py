@@ -94,7 +94,7 @@ def test_agent_can_propose_install_but_not_apply(agent, admin):
     assert states(agent)["case_management"] == "installed"
 
 
-def test_uninstall_retires_objects_and_keeps_data(session):
+def test_uninstall_retires_objects_and_keeps_data(session, conn):
     install(session, "case_management")
     session.records.create("support_case", {"subject": "Keep me"})
     proposal = session.packages.propose_uninstall("case_management")
@@ -102,7 +102,7 @@ def test_uninstall_retires_objects_and_keeps_data(session):
     session.packages.apply(proposal.id, diff_hash=proposal.diff_hash)
     assert states(session)["case_management"] == "uninstalled"
     assert "support_case" not in {o["api_name"] for o in session.describe_schema()["objects"]}
-    count = session.conn.execute(
+    count = conn.execute(
         f'SELECT count(*) FROM "{session.tenant.schema}".support_case'  # noqa: S608
     ).fetchone()[0]
     assert count == 1  # data is kept
