@@ -410,6 +410,46 @@ _ENGINE_MIGRATIONS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS {s}.jobs (
+        id               uuid PRIMARY KEY,
+        kind             text NOT NULL,
+        payload          jsonb NOT NULL DEFAULT '{{}}',
+        status           text NOT NULL DEFAULT 'queued'
+                         CHECK (status IN ('queued', 'running', 'succeeded', 'failed',
+                                           'cancelled')),
+        priority         integer NOT NULL DEFAULT 0,
+        attempts         integer NOT NULL DEFAULT 0,
+        max_attempts     integer NOT NULL DEFAULT 3,
+        run_after        timestamptz NOT NULL DEFAULT now(),
+        locked_by        text,
+        locked_until     timestamptz,
+        last_error       jsonb,
+        idempotency_key  text UNIQUE,
+        run_as_user      uuid NOT NULL,
+        run_as_type      text NOT NULL,
+        on_behalf_of     uuid,
+        agent_id         text,
+        source           text NOT NULL DEFAULT 'job',
+        created_at       timestamptz NOT NULL DEFAULT now(),
+        started_at       timestamptz,
+        finished_at      timestamptz
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS jobs_claim ON {s}.jobs (status, run_after)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.workflow_schedules (
+        workflow_id    uuid NOT NULL,
+        trigger_index  integer NOT NULL,
+        cron           text NOT NULL,
+        timezone       text NOT NULL,
+        run_as_user    uuid NOT NULL,
+        next_run_at    timestamptz NOT NULL,
+        PRIMARY KEY (workflow_id, trigger_index)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS {s}.workflow_checkpoint_writes (
         thread_id      text NOT NULL,
         checkpoint_ns  text NOT NULL DEFAULT '',
@@ -424,6 +464,54 @@ _ENGINE_MIGRATIONS = [
     )
     """,
 ]
+
+
+# One-time schema changes to existing engine tables, recorded in meta_engine_migrations.
+# Append only; each runs once per tenant, in order.
+_SCHEMA_ONCE: list[tuple[str, list[str]]] = [
+    (
+        "2026-11-record-events-updates-and-dispatch",
+        [
+            "ALTER TABLE {s}.record_events DROP CONSTRAINT IF EXISTS record_events_event_check",
+            "ALTER TABLE {s}.record_events ADD CONSTRAINT record_events_event_check "
+            "CHECK (event IN ('created', 'updated', 'retired'))",
+            "ALTER TABLE {s}.record_events ADD COLUMN IF NOT EXISTS changed_fields text[]",
+            # Existing events count as already dispatched, so old changes never fire
+            # new triggers; new events start undispatched.
+            "ALTER TABLE {s}.record_events ADD COLUMN IF NOT EXISTS dispatched_at timestamptz "
+            "DEFAULT now()",
+            "ALTER TABLE {s}.record_events ALTER COLUMN dispatched_at DROP DEFAULT",
+            "CREATE INDEX IF NOT EXISTS record_events_undispatched ON {s}.record_events (id) "
+            "WHERE dispatched_at IS NULL",
+        ],
+    ),
+    (
+        "2026-11-workflow-runs-queued",
+        [
+            "ALTER TABLE {s}.workflow_runs DROP CONSTRAINT IF EXISTS workflow_runs_status_check",
+            "ALTER TABLE {s}.workflow_runs ADD CONSTRAINT workflow_runs_status_check CHECK "
+            "(status IN ('queued', 'running', 'waiting', 'succeeded', 'rejected', 'failed', "
+            "'cancelled'))",
+            "ALTER TABLE {s}.workflow_runs ADD COLUMN IF NOT EXISTS trigger jsonb",
+        ],
+    ),
+]
+
+
+def _run_schema_once(conn: psycopg.Connection, tenant: Tenant) -> None:
+    done_table = sql.Identifier(tenant.schema, "meta_engine_migrations")
+    schema = sql.Identifier(tenant.schema)
+    for name, statements in _SCHEMA_ONCE:
+        claimed = conn.execute(
+            sql.SQL(
+                "INSERT INTO {} (name) VALUES (%s) ON CONFLICT DO NOTHING RETURNING name"
+            ).format(done_table),
+            (name,),
+        ).fetchone()
+        if claimed is None:
+            continue
+        for statement in statements:
+            conn.execute(sql.SQL(statement).format(s=schema))
 
 
 # One-time data migrations, recorded in meta_engine_migrations so a tenant's later
@@ -487,6 +575,7 @@ def upgrade_engine_tables(conn: psycopg.Connection, tenant: Tenant) -> None:
                         ).format(sql.Identifier(tenant.schema, "meta_role_permissions")),
                         (role, permission),
                     )
+        _run_schema_once(conn, tenant)
         _run_data_migrations(conn, tenant)
 
 

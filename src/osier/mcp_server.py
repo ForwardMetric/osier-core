@@ -745,7 +745,8 @@ def build_server(
             else f"Create workflow {preview['name']!r}"
         )
         steps = "\n".join(f"- {line}" for line in preview["steps"])
-        return Elicit(f"{verb}?\n\n{preview['description']}\n\n{steps}", Confirm)
+        triggers = "".join(f"\nIt {line}." for line in preview["triggers"])
+        return Elicit(f"{verb}?\n\n{preview['description']}{triggers}\n\n{steps}", Confirm)
 
     @server.tool(
         description="Create a workflow, or save a new version of one (same name). The "
@@ -754,7 +755,11 @@ def build_server(
         "(object, record_id), query_records (query, as in query_records), create_record "
         "(object, values), update_record (object, record_id, values), condition (when: "
         "[{value, op, compare_to}], then, else), approval (message, approver_roles, "
-        "on_reject), finish (output). Steps run in order unless they name 'next'; jumps "
+        "on_reject), finish (output). Optional triggers (up to 5): record_created / "
+        "record_updated (object, fields, when, inputs using {{record.<field>}}) run with the "
+        "permissions of whoever changed the record; schedule (cron, timezone, inputs) runs "
+        "with the saver's permissions, at most every 5 minutes. Triggered runs need "
+        "`osier worker` running. Steps run in order unless they name 'next'; jumps "
         "only go forward; 'end' ends the run. Refer to inputs and earlier results with "
         "{{inputs.x}} or {{steps.<id>.record.<field>}}. No code. Needs workflows.manage; "
         "the user confirms.",
@@ -777,12 +782,16 @@ def build_server(
 
     @server.tool(
         description="Start a workflow run with its inputs. It runs with the user's "
-        "permissions until it finishes or reaches an approval step (status 'waiting').",
+        "permissions until it finishes or reaches an approval step (status 'waiting'). "
+        "background=true queues it for the worker (`osier worker`) and returns at once; "
+        "use it for long workflows.",
         annotations=WRITE,
     )
     @_tool_errors
-    def start_workflow(name: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
-        return sessions.agent().workflows.start(name, inputs or {})
+    def start_workflow(
+        name: str, inputs: dict[str, Any] | None = None, background: bool = False
+    ) -> dict[str, Any]:
+        return sessions.agent().workflows.start(name, inputs or {}, background=background)
 
     @server.tool(description="A workflow run: status, step results, output.", annotations=READ)
     @_tool_errors

@@ -187,6 +187,19 @@ uv run osier workflows start qualify-lead --input lead_id=<id>
 
 `osier workflows list | show | versions | runs | run | cancel | status`, and
 `osier approvals list | approve | reject` for waiting runs.
+
+Workflows can start themselves: when a record is created or updated (optionally
+only when certain fields change or conditions hold), or on a schedule (cron with a
+time zone, at most every 5 minutes). Triggered runs and `--background` runs are
+executed by the worker; keep it running in a terminal:
+
+```bash
+uv run osier worker
+```
+
+Runs from record changes use the permissions of whoever made the change; scheduled
+runs use the permissions of the person who saved the workflow. Changes made by
+workflows never trigger other workflows. `osier jobs list` shows background jobs.
 Adding and changing skills needs the Developer or Admin role; everyone can use
 the skills shared with them.
 
@@ -228,13 +241,13 @@ the skills shared with them.
   versions, visibility, import from GitHub, and `osier skills` commands.
 - **Workflows:** declarative definitions (no code) run on LangGraph, with record
   steps, conditions, and approvals that pause the run; checkpoints in the tenant's
-  schema; `osier workflows` commands.
+  schema; record and schedule triggers; a Postgres job queue and `osier worker`
+  with leases and retries; `osier workflows` and `osier jobs` commands.
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
 Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone
 signing in to osier), object- and field-level permissions, views, marketing email,
-multi-database placement, reporting, background jobs and workflow triggers, agent
-steps in workflows, skills with scripts.
+multi-database placement, reporting, agent steps in workflows, skills with scripts.
 
 ## Using the engine from Python
 

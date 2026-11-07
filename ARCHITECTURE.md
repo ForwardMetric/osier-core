@@ -855,12 +855,44 @@ backfills).
   `workflows.manage` when none are named. The decision is claimed atomically, so
   a run cannot be decided twice. Approvals show in `list_pending_approvals` and
   `osier approvals`.
-- **Execution is synchronous for now:** a run executes inside the request that
-  starts or resumes it, until it ends or reaches an approval. **Not built yet:**
-  the background job runner, triggers (record events, schedules), retries of
-  failed runs, loops, agent steps (tenant's Claude key), connector-call steps,
-  and running other workflows as steps. Agent steps and long steps need the job
-  runner first, so a chat request is not held open.
+- **Execution:** a run started by hand runs inside the request until it ends or
+  reaches an approval, or, with `background`, in the worker (§12.7). Triggered runs
+  always run in the worker. **Not built yet:** retrying failed runs, loops, agent
+  steps (tenant's Claude key), connector-call steps, running other workflows as
+  steps.
+
+### 12.7 Job queue, worker, and triggers (built)
+
+- **Queue:** a `jobs` table **in each tenant schema** (not yet the central
+  control-plane queue of §12.1; that comes with M5). A job is a platform handler
+  (`jobs.HANDLERS`, currently only `workflow.execute`) plus a JSON payload and the
+  principal it runs as. Tenants never supply job code.
+- **Worker:** `osier worker` claims jobs with `FOR UPDATE SKIP LOCKED` and a
+  5-minute lease; a job whose worker vanished is claimed again after the lease.
+  Unexpected errors retry with backoff (10 s, 60 s, 300 s) up to 3 attempts, then
+  the job and its run are marked failed; `OsierError`s are final. At most 5 jobs
+  run at once per tenant (a simple cap, checked when claiming). Several workers can
+  run side by side. Workflow jobs resume from the last checkpoint, so a retried run
+  does not repeat completed steps.
+- **Record triggers** (`record_created`, `record_updated` with optional `fields`
+  and `when` checks). Record updates now write `updated` record events with the
+  changed fields. The worker claims undispatched events with `SKIP LOCKED` and, in
+  the same transaction, creates the runs and jobs and marks the events dispatched:
+  each event fires once, none is skipped. Events written before this change, or
+  before a workflow existed, never fire it.
+- **Who triggered runs act as:** the person (or agent acting for a person) who made
+  the change, so a trigger never grants more access than its cause had. Changes made
+  by workflow steps are tagged `source = workflow` and **never fire triggers** (no
+  loops; chaining workflows is deliberately unsupported for now). Platform changes
+  (system principal) never fire triggers.
+- **Schedules** (`schedule`: 5-field cron + IANA time zone, at most every 5
+  minutes; `croniter`, MIT) run with the permissions of the **person who last saved
+  or enabled the workflow**; the confirmation prompt says so. Each due time fires
+  once; missed times are skipped, not replayed. Disabling or retiring a workflow
+  removes its schedules.
+- **Not built yet:** a central cross-tenant queue and fair scheduling, `LISTEN/NOTIFY`
+  instead of polling (the worker polls every 2 s when idle), job progress reporting,
+  time and cost budgets, and alerting on failed runs.
 
 ### 12.5 Skills (built: text only)
 
@@ -1119,7 +1151,7 @@ the implementation is written from first principles.
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
-| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). **Next:** job runner and triggers, then agent steps on the tenant's Claude key; metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
+| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). job queue, worker, record and schedule triggers (§12.7). **Next:** agent steps on the tenant's Claude key; metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single

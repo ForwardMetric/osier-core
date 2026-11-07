@@ -6,6 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "croniter>=6.2,<7",
     "cryptography>=43",
     "jsonschema>=4.23",
     "langgraph>=1.2,<1.3",

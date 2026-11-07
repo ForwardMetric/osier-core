@@ -304,12 +304,13 @@ class RecordService:
         event: str,
         request_id: uuid.UUID | None,
         provenance: Provenance | None,
+        changed_fields: list[str] | None = None,
     ) -> None:
         self._conn.execute(
             sql.SQL(
                 "INSERT INTO {} (object_id, record_id, event, actor_id, actor_type, on_behalf_of, "
-                "agent_id, source, request_id, provenance) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "agent_id, source, request_id, provenance, changed_fields) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ).format(self._engine_table("record_events")),
             (
                 obj.id,
@@ -318,6 +319,7 @@ class RecordService:
                 *self._actor_columns(),
                 request_id,
                 Jsonb(provenance.model_dump(mode="json")) if provenance else None,
+                changed_fields,
             ),
         )
 
@@ -636,6 +638,7 @@ class RecordService:
                 assert row is not None
                 history = [(obj.fields[k], current[k], row[k]) for k in changed if k in obj.fields]
                 self._write_history(obj, row["id"], history, request_id, prov)
+                self._write_event(obj, row["id"], "updated", request_id, prov, sorted(changed))
         except psycopg.Error as exc:
             raise self._map_db_error(exc, snapshot, obj) from exc
         return self._output(obj, row)

@@ -64,6 +64,8 @@ ENGINE_TABLES = frozenset(
         "meta_workflows",
         "meta_workflow_versions",
         "workflow_runs",
+        "workflow_schedules",
+        "jobs",
         "workflow_run_events",
         "workflow_checkpoints",
         "workflow_checkpoint_writes",

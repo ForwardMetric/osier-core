@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from typing import Annotated, Any, TypedDict
@@ -40,9 +41,11 @@ from .spec import (
     Finish,
     GetRecord,
     QueryRecords,
+    ScheduleTrigger,
     UpdateRecord,
     WorkflowError,
     check,
+    next_run,
     parse_definition,
     resolve,
     validate_definition,
@@ -131,6 +134,7 @@ class WorkflowService:
             "version": row["version"],
             "status": row["status"],
             "inputs": d.get("inputs", {}),
+            "triggers": d.get("triggers", []),
             "steps": [{"id": s["id"], "type": s["type"]} for s in d["steps"]],
         }
 
@@ -180,6 +184,7 @@ class WorkflowService:
             "current_version": existing["version"] if existing else None,
             "objects": objects,
             "steps": [describe_step(s) for s in parsed.steps],
+            "triggers": [describe_trigger(t) for t in parsed.triggers],
             "definition": parsed.dump(),
         }
 
@@ -248,6 +253,7 @@ class WorkflowService:
                     change,
                 ),
             )
+        self._sync_schedules(workflow_id, parse_definition(stored), active=True)
         return self._summary(self._row(preview["name"]))
 
     def set_status(self, name: str, status: str) -> dict[str, Any]:
@@ -265,7 +271,41 @@ class WorkflowService:
             ).format(self._t("meta_workflows")),
             (status, self._principal.user_id, row["id"]),
         )
+        self._sync_schedules(
+            row["id"], parse_definition(row["definition"]), active=status == "active"
+        )
         return {"name": name, "status": status}
+
+    def _sync_schedules(
+        self, workflow_id: uuid.UUID, definition: Definition, *, active: bool
+    ) -> None:
+        """Schedules run as the person who last saved or enabled the workflow."""
+        import datetime as dt
+
+        self._conn.execute(
+            sql.SQL("DELETE FROM {} WHERE workflow_id = %s").format(self._t("workflow_schedules")),
+            (workflow_id,),
+        )
+        if not active:
+            return
+        owner = self._person() or self._principal.user_id
+        now = dt.datetime.now(dt.UTC)
+        for index, trigger in enumerate(definition.triggers):
+            if isinstance(trigger, ScheduleTrigger):
+                self._conn.execute(
+                    sql.SQL(
+                        "INSERT INTO {} (workflow_id, trigger_index, cron, timezone, "
+                        "run_as_user, next_run_at) VALUES (%s, %s, %s, %s, %s, %s)"
+                    ).format(self._t("workflow_schedules")),
+                    (
+                        workflow_id,
+                        index,
+                        trigger.cron,
+                        trigger.timezone,
+                        owner,
+                        next_run(trigger.cron, trigger.timezone, now),
+                    ),
+                )
 
     # ---- runs -------------------------------------------------------------------------
 
@@ -308,36 +348,101 @@ class WorkflowService:
                 ) from None
         return _plain(checked)
 
-    def start(self, name: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Start a run. It runs until it finishes or reaches an approval step."""
+    def start(
+        self, name: str, inputs: dict[str, Any] | None = None, *, background: bool = False
+    ) -> dict[str, Any]:
+        """Start a run. It runs until it finishes or reaches an approval step, here or,
+        with ``background``, in a worker (``osier worker``)."""
         self._authz.require("records.use", "running workflows")
         row = self._row(name)
         if row["status"] != "active":
             raise NotFoundError(f"Workflow {name!r} is disabled.", code="WORKFLOW_DISABLED")
         definition = self._definition(row["id"], row["version"])
         checked = self._check_inputs(definition, inputs or {})
-        p = self._principal
+        run_id = self.create_run(row, checked, self._principal, queued=background)
+        if background:
+            return self.get_run(run_id)
+        return self._execute(run_id, {"inputs": checked, "steps": {}})
+
+    def create_run(
+        self,
+        workflow: dict[str, Any],
+        inputs: dict[str, Any],
+        principal: Principal,
+        *,
+        queued: bool,
+        trigger: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> uuid.UUID:
+        """Insert a run (and, when queued, its job). Used by start and by triggers."""
+        from ..jobs import JobService
+
         run_id = uuid.uuid4()
+        status = "failed" if error else ("queued" if queued else "running")
         self._conn.execute(
             sql.SQL(
                 "INSERT INTO {} (id, workflow_id, workflow_name, version, status, inputs, "
-                "run_as_user, run_as_type, on_behalf_of, agent_id) "
-                "VALUES (%s, %s, %s, %s, 'running', %s, %s, %s, %s, %s)"
+                "run_as_user, run_as_type, on_behalf_of, agent_id, trigger, error, finished_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "CASE WHEN %s THEN now() END)"
             ).format(self._t("workflow_runs")),
             (
                 run_id,
-                row["id"],
-                name,
-                row["version"],
-                Jsonb(checked),
-                p.user_id,
-                p.actor_type.value,
-                p.on_behalf_of,
-                p.agent_id,
+                workflow["id"],
+                workflow["name"],
+                workflow["version"],
+                status,
+                Jsonb(_plain(inputs)),
+                principal.user_id,
+                principal.actor_type.value,
+                principal.on_behalf_of,
+                principal.agent_id,
+                Jsonb(_plain(trigger)) if trigger else None,
+                Jsonb(error) if error else None,
+                bool(error),
             ),
         )
-        self._event(run_id, None, "started", {"inputs": checked, "version": row["version"]})
-        return self._execute(run_id, {"inputs": checked, "steps": {}})
+        self._event(
+            run_id,
+            None,
+            "started" if not error else "failed",
+            {
+                "inputs": inputs,
+                "version": workflow["version"],
+                "trigger": trigger,
+                **({"error": error} if error else {}),
+            },
+        )
+        if queued and not error:
+            JobService(self._session).enqueue(
+                "workflow.execute",
+                {"run_id": str(run_id)},
+                principal=principal,
+                source="workflow",
+                idempotency_key=f"workflow-run:{run_id}",
+            )
+        return run_id
+
+    def execute_job(self, run_id: Any, decision: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run or resume a run in a worker. Safe to repeat after a crash: it continues
+        from the last checkpoint."""
+        run = self._run_row(run_id)
+        if run["status"] in FINISHED or run["status"] == "waiting":
+            return self._run_out(run)
+        self._conn.execute(
+            sql.SQL(
+                "UPDATE {} SET status = 'running', updated_at = now() WHERE id = %s "
+                "AND status IN ('queued', 'running')"
+            ).format(self._t("workflow_runs")),
+            (run["id"],),
+        )
+        return self._execute(run["id"], None, definition_of=run, decision=decision)
+
+    def mark_failed(self, run_id: Any, error: dict[str, Any]) -> None:
+        run = self._run_row(run_id)
+        if run["status"] not in FINISHED:
+            self._finish(run["id"], "failed", error=error)
+            self._event(run["id"], None, "failed", error)
 
     def _run_row(self, run_id: Any, *, lock: bool = False) -> dict[str, Any]:
         try:
@@ -378,6 +483,7 @@ class WorkflowService:
                 "error": row["error"],
                 "started_by": row["on_behalf_of"] or row["run_as_user"],
                 "started_by_agent": row["run_as_type"] == ActorType.AGENT.value,
+                "trigger": row.get("trigger"),
                 "started_at": row["started_at"],
                 "finished_at": row["finished_at"],
             }
@@ -443,7 +549,9 @@ class WorkflowService:
             ).fetchall()
         return [self._run_out(r) for r in rows if self._may_decide(r)]
 
-    def decide(self, run_id: Any, *, approve: bool, comment: str | None = None) -> dict[str, Any]:
+    def decide(
+        self, run_id: Any, *, approve: bool, comment: str | None = None, background: bool = False
+    ) -> dict[str, Any]:
         """Approve or reject the step a run is waiting on, then continue the run."""
         run = self._run_row(run_id)
         waiting = run["waiting"] or {}
@@ -471,10 +579,10 @@ class WorkflowService:
             self._authz.require("workflows.manage", "deciding workflow approvals")
         claimed = self._conn.execute(
             sql.SQL(
-                "UPDATE {} SET status = 'running', waiting = NULL, updated_at = now() "
+                "UPDATE {} SET status = %s, waiting = NULL, updated_at = now() "
                 "WHERE id = %s AND status = 'waiting' RETURNING id"
             ).format(self._t("workflow_runs")),
-            (run["id"],),
+            ("queued" if background else "running", run["id"]),
         ).fetchone()
         if claimed is None:
             raise ApprovalError("Someone else just decided this.", code="WORKFLOW_RUN_NOT_WAITING")
@@ -484,7 +592,19 @@ class WorkflowService:
             "comment": comment,
         }
         self._event(run["id"], waiting.get("step"), "approved" if approve else "rejected", decision)
-        runner = self._session.as_principal(self._run_as(run))
+        run_as = self._run_as(run)
+        if background:
+            from ..jobs import JobService
+
+            JobService(self._session).enqueue(
+                "workflow.execute",
+                {"run_id": str(run["id"]), "decision": decision},
+                principal=run_as,
+                source="workflow",
+                idempotency_key=f"workflow-decision:{run['id']}:{waiting.get('step')}",
+            )
+            return self.get_run(run["id"])
+        runner = self._session.as_principal(run_as)
         return WorkflowService(runner)._execute(
             run["id"], Command(resume=decision), definition_of=run
         )
@@ -530,12 +650,23 @@ class WorkflowService:
     # ---- execution --------------------------------------------------------------------
 
     def _execute(
-        self, run_id: uuid.UUID, payload: Any, *, definition_of: dict[str, Any] | None = None
+        self,
+        run_id: uuid.UUID,
+        payload: Any,
+        *,
+        definition_of: dict[str, Any] | None = None,
+        decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         run = definition_of or self._run_row(run_id)
         definition = self._definition(run["workflow_id"], run["version"])
         graph = self._compile(definition, run_id)
         config = {"configurable": {"thread_id": str(run_id)}}
+        if payload is None:  # a worker: start, resume with a decision, or continue
+            current = graph.get_state(config)
+            if not current.values:
+                payload = {"inputs": run["inputs"], "steps": {}}
+            elif decision is not None and current.interrupts:
+                payload = Command(resume=decision)
         try:
             graph.invoke(payload, config)
         except _StepFailed as failed:
@@ -616,7 +747,10 @@ class WorkflowService:
         return graph.compile(checkpointer=TenantCheckpointSaver(self._conn))
 
     def _node(self, step: Any, run_id: uuid.UUID) -> Any:
-        records = self._session.records
+        # Changes made by workflow steps are marked as such and never fire triggers.
+        records = self._session.as_principal(
+            dataclasses.replace(self._principal, source="workflow")
+        ).records
         provenance = {"source_type": "system", "source_ref": f"workflow run {run_id}"}
 
         def run(state: RunState) -> dict[str, Any]:
@@ -681,6 +815,21 @@ class WorkflowService:
         if isinstance(step, Finish):
             return {"output": resolve(step.output, context)}
         raise WorkflowError(f"Unsupported step type {step.type!r}.")
+
+
+def describe_trigger(trigger: Any) -> str:
+    if isinstance(trigger, ScheduleTrigger):
+        return (
+            f"runs on schedule '{trigger.cron}' ({trigger.timezone}) with the permissions "
+            "of the person saving this workflow"
+        )
+    what = "created" if trigger.type == "record_created" else "updated"
+    fields = f" ({', '.join(trigger.fields)} changed)" if trigger.fields else ""
+    cond = " when its conditions hold" if trigger.when else ""
+    return (
+        f"runs when a {trigger.object} record is {what}{fields}{cond}, with the "
+        "permissions of whoever made the change"
+    )
 
 
 def describe_step(step: Any) -> str:

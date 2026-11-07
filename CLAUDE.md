@@ -35,7 +35,10 @@ uv run ruff check . && uv run ruff format --check .
   visibility (`SkillService`, via `session.skills`)
 - `src/osier/workflows/` — workflows: `spec.py` (declarative definition, references,
   validation), `service.py` (`WorkflowService`: versions, runs, approvals; compiles to a
-  LangGraph graph), `checkpoint.py` (LangGraph checkpointer on `TenantConnection`)
+  LangGraph graph), `checkpoint.py` (LangGraph checkpointer on `TenantConnection`),
+  `triggers.py` (record events and schedules → queued runs)
+- `src/osier/jobs.py` — per-tenant job queue, platform handlers, and the `Worker`
+  (`osier worker`)
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
@@ -90,3 +93,8 @@ uv run ruff check . && uv run ruff format --check .
 17. **Workflows never run code and never escalate.** Steps are declarative; a run uses
     the permissions of whoever started it; approvals are decided by people only. Use
     `TenantCheckpointSaver`, never LangGraph's own Postgres saver (it bypasses the guard).
+    Triggered runs act as whoever made the change (schedules: the person who saved the
+    workflow); changes made by workflows (`source = workflow`) never fire triggers.
+18. **Job handlers are platform code only** (`jobs.HANDLERS`), run as the job's
+    principal through a `Session`. Make them safe to repeat: a job can run again after
+    a lost lease or a retry.

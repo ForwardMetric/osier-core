@@ -578,6 +578,8 @@ def cmd_workflows_add(args: argparse.Namespace) -> None:
     preview = session.workflows.preview(definition)
     print(f"{preview['action'].capitalize()} workflow {preview['name']!r}")
     print(f"  {preview['description']}")
+    for line in preview["triggers"]:
+        print(f"  It {line}.")
     for line in preview["steps"]:
         print(f"  - {line}")
     if not _confirm("Save it?", args.yes):
@@ -591,7 +593,38 @@ def cmd_workflows_start(args: argparse.Namespace) -> None:
     for pair in args.input or []:
         key, _, value = pair.partition("=")
         inputs[key] = value
-    _print(_admin(DevConfig.load()).workflows.start(args.name, inputs))
+    _print(_admin(DevConfig.load()).workflows.start(args.name, inputs, background=args.background))
+
+
+def cmd_worker(args: argparse.Namespace) -> None:
+    import logging
+
+    from .context import Principal
+    from .jobs import Worker
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    config = DevConfig.load()
+    system = config.session(Principal.system("worker"))
+    worker = Worker(lambda: [system])
+    if args.once:
+        _print(worker.run_until_idle())
+        return
+    print(f"osier worker {worker.worker_id}: running jobs and triggers (Ctrl+C to stop)")
+    try:
+        worker.run_forever(poll_seconds=args.poll)
+    except KeyboardInterrupt:
+        print("stopped")
+
+
+def cmd_jobs_list(args: argparse.Namespace) -> None:
+    from .jobs import JobService
+
+    for j in JobService(_admin(DevConfig.load())).list(status=args.status, limit=args.limit):
+        error = (j["last_error"] or {}).get("message", "")
+        print(
+            f"{j['id']}  {j['kind']:<18} {j['status']:<10} attempts {j['attempts']}/"
+            f"{j['max_attempts']}  {j['created_at']}  {error[:60]}"
+        )
 
 
 def cmd_workflows_runs(args: argparse.Namespace) -> None:
@@ -834,6 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--input", action="append", help="KEY=VALUE (repeatable)")
     p.add_argument("--inputs-json", help="all inputs as a JSON object")
+    p.add_argument("--background", action="store_true", help="run it in the worker")
     p.set_defaults(func=cmd_workflows_start)
     p = wf.add_parser("runs", help="recent runs")
     p.add_argument("--status")
@@ -850,6 +884,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("status", choices=["active", "disabled", "retired"])
     p.set_defaults(func=cmd_workflows_status)
+
+    w = sub.add_parser("worker", help="run background jobs and workflow triggers")
+    w.add_argument("--once", action="store_true", help="run until idle, then exit")
+    w.add_argument("--poll", type=float, default=2.0, help="seconds between checks when idle")
+    w.set_defaults(func=cmd_worker)
+    jobs = sub.add_parser("jobs", help="background jobs").add_subparsers(
+        dest="jobs_command", required=True
+    )
+    jl = jobs.add_parser("list")
+    jl.add_argument("--status")
+    jl.add_argument("--limit", type=int, default=30)
+    jl.set_defaults(func=cmd_jobs_list)
 
     out = sub.add_parser("outbox", help="recent emails and connector actions")
     out.add_argument("--limit", type=int, default=20)

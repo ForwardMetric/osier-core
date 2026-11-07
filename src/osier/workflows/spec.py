@@ -137,10 +137,40 @@ STEP_TYPES = [
 ]
 
 
+class RecordTrigger(_Model):
+    """Start a run when a record is created or updated. ``fields`` (updates only)
+    limits it to changes of those fields; ``when`` checks the record. Inputs may use
+    ``{{record.<field>}}`` and ``{{event.changed_fields}}``. The run uses the
+    permissions of whoever made the change; changes made by workflows never fire
+    triggers."""
+
+    type: Literal["record_created", "record_updated"]
+    object: str
+    fields: list[str] = Field(default_factory=list, max_length=20)
+    when: list[Check] = Field(default_factory=list, max_length=10)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScheduleTrigger(_Model):
+    """Start a run on a cron schedule (at most every 5 minutes) in a time zone. The
+    run uses the permissions of the person who last saved the workflow. Inputs may
+    use ``{{schedule.time}}``."""
+
+    type: Literal["schedule"]
+    cron: str = Field(min_length=9, max_length=100)
+    timezone: str = "UTC"
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+Trigger = Annotated[RecordTrigger | ScheduleTrigger, Field(discriminator="type")]
+MIN_SCHEDULE_SECONDS = 300
+
+
 class Definition(_Model):
     name: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=1024)
     inputs: dict[str, InputDef] = Field(default_factory=dict, max_length=30)
+    triggers: list[Trigger] = Field(default_factory=list, max_length=5)
     steps: list[Step] = Field(min_length=1, max_length=MAX_STEPS)
 
     def dump(self) -> dict[str, Any]:
@@ -313,4 +343,106 @@ def validate_definition(definition: Definition, snapshot: SchemaSnapshot) -> lis
                         field=where,
                         expected=sorted(obj.active_fields),
                     )
+    for i, trigger in enumerate(definition.triggers):
+        objects |= _validate_trigger(definition, trigger, f"triggers.{i}", snapshot)
     return sorted(objects)
+
+
+def _validate_trigger(
+    definition: Definition, trigger: Any, where: str, snapshot: SchemaSnapshot
+) -> set[str]:
+    unknown = sorted(set(trigger.inputs) - set(definition.inputs))
+    if unknown:
+        raise WorkflowError(
+            f"{where} sets unknown inputs {unknown}.",
+            field=where,
+            expected=sorted(definition.inputs),
+        )
+    missing = sorted(
+        n for n, spec in definition.inputs.items() if spec.required and n not in trigger.inputs
+    )
+    if missing:
+        raise WorkflowError(
+            f"{where} must set the required inputs {missing}.",
+            field=where,
+            hint='e.g. "inputs": {"lead_id": "{{record.id}}"}',
+        )
+    if isinstance(trigger, ScheduleTrigger):
+        _check_schedule(trigger, where)
+        for ref in references(trigger.inputs):
+            if ref != "schedule.time":
+                raise WorkflowError(
+                    f"{where} refers to {{{{{ref}}}}}; schedules can use {{{{schedule.time}}}}.",
+                    field=where,
+                )
+        return set()
+    obj = snapshot.get_object(trigger.object)
+    known = set(obj.active_fields) | {
+        "id",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+        "owner_id",
+        "row_version",
+    }
+    if trigger.fields and trigger.type != "record_updated":
+        raise WorkflowError(f"{where}: 'fields' only applies to record_updated.", field=where)
+    for field in trigger.fields:
+        if field not in obj.active_fields:
+            raise WorkflowError(
+                f"{where}: {obj.api_name!r} has no field {field!r}.",
+                field=where,
+                expected=sorted(obj.active_fields),
+            )
+    for ref in references([trigger.inputs, [c.model_dump() for c in trigger.when]]):
+        root, _, rest = ref.partition(".")
+        if (root == "record" and rest.split(".")[0] in known) or ref == "event.changed_fields":
+            continue
+        raise WorkflowError(
+            f"{where} refers to {{{{{ref}}}}}, which is not a field of {obj.api_name!r}.",
+            field=where,
+            expected=sorted(f"record.{f}" for f in known) + ["event.changed_fields"],
+        )
+    return {obj.api_name}
+
+
+def _check_schedule(trigger: ScheduleTrigger, where: str) -> None:
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from croniter import croniter
+
+    try:
+        zone = ZoneInfo(trigger.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise WorkflowError(
+            f"{where}: unknown time zone {trigger.timezone!r}.",
+            field=where,
+            expected="an IANA time zone, e.g. 'Europe/London' or 'UTC'",
+        ) from None
+    if len(trigger.cron.split()) != 5 or not croniter.is_valid(trigger.cron):
+        raise WorkflowError(
+            f"{where}: {trigger.cron!r} is not a 5-field cron expression.",
+            field=where,
+            expected="minute hour day-of-month month day-of-week, e.g. '0 9 * * 1-5'",
+        )
+    it = croniter(trigger.cron, dt.datetime.now(zone))
+    times = [it.get_next(dt.datetime) for _ in range(6)]
+    shortest = min((b - a).total_seconds() for a, b in zip(times, times[1:], strict=False))
+    if shortest < MIN_SCHEDULE_SECONDS:
+        raise WorkflowError(
+            f"{where}: schedules may run at most every {MIN_SCHEDULE_SECONDS // 60} minutes.",
+            field=where,
+        )
+
+
+def next_run(cron: str, timezone: str, after: Any) -> Any:
+    """The next time a schedule fires after ``after`` (an aware datetime)."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from croniter import croniter
+
+    local = after.astimezone(ZoneInfo(timezone))
+    return croniter(cron, local).get_next(dt.datetime).astimezone(dt.UTC)
