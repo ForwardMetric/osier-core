@@ -37,8 +37,10 @@ uv run ruff check . && uv run ruff format --check .
   validation), `service.py` (`WorkflowService`: versions, runs, approvals; compiles to a
   LangGraph graph), `checkpoint.py` (LangGraph checkpointer on `TenantConnection`),
   `triggers.py` (record events and schedules → queued runs)
-- `src/osier/jobs.py` — per-tenant job queues on Procrastinate (schema `j_<hex>`),
-  tenant job settings, platform tasks, and the `Worker` (`osier worker`)
+- `src/osier/jobs/` — background jobs behind the `JobBackend` interface (`base.py`):
+  `settings.py` (per-tenant settings), `runner.py` (`execute_run`, the engine entry
+  point), `worker.py` (`osier worker` loop), `procrastinate_backend.py` (today's backend,
+  one queue schema `j_<hex>` per tenant)
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
@@ -95,7 +97,9 @@ uv run ruff check . && uv run ruff format --check .
     `TenantCheckpointSaver`, never LangGraph's own Postgres saver (it bypasses the guard).
     Triggered runs act as whoever made the change (schedules: the person who saved the
     workflow); changes made by workflows (`source = workflow`) never fire triggers.
-18. **Jobs are platform tasks only** (registered in `jobs.TenantQueue`), run as the
+18. **Jobs are platform tasks only** (registered by the backend; executed through
+    `jobs.runner.execute_run`). Only `osier.jobs` may import the queue library, and job
+    payloads carry ids only, never business data. Jobs run as the
     run's principal through a `Session`. Make them safe to repeat: a job can run again
     after a crashed worker or a retry. Each tenant's queue stays in its own `j_<hex>`
     schema; never read or write queue tables through `TenantConnection` or from

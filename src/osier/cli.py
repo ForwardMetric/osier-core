@@ -597,9 +597,10 @@ def cmd_workflows_start(args: argparse.Namespace) -> None:
 
 
 def _worker(config: DevConfig) -> Any:
-    from .jobs import Worker
+    from .jobs import Worker, default_backend
 
-    return Worker(config.database_url, lambda: [config.tenant], connect=config.connect)
+    backend = default_backend(config.database_url, config.connect)
+    return Worker(backend, lambda: [config.tenant], config.connect)
 
 
 def cmd_worker(args: argparse.Namespace) -> None:
@@ -619,10 +620,11 @@ def cmd_worker(args: argparse.Namespace) -> None:
 
 
 def cmd_jobs_list(args: argparse.Namespace) -> None:
-    from .jobs import list_jobs
+    from .jobs import default_backend, list_jobs
 
     config = DevConfig.load()
-    for j in list_jobs(config.database_url, _admin(config), status=args.status, limit=args.limit):
+    backend = default_backend(config.database_url, config.connect)
+    for j in list_jobs(backend, _admin(config), status=args.status, limit=args.limit):
         print(
             f"{j['id']:>6}  {j['task']:<18} {j['status']:<10} attempts {j['attempts']}  {j['args']}"
         )

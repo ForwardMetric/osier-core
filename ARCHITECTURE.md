@@ -868,6 +868,22 @@ backfills).
   table with another's. This replaces the central queue planned in §12.1: tenant
   isolation outweighs simpler cross-tenant scheduling. Dropping a tenant drops its
   queue.
+- **Replaceable backend.** All queue code sits in `osier.jobs` behind the `JobBackend`
+  interface (`jobs/base.py`): install/drop a tenant's queue, hand over run ids, run
+  until idle or serve, maintain (crashed workers, retention), list jobs. The engine's
+  only entry point for executing work is `jobs.runner.execute_run(tenant, run_id)`;
+  workflow runs in the tenant schema are the source of truth; job payloads carry ids
+  only. A test runs the full trigger → run → approval flow on a second, in-memory
+  backend, and a test fails if anything outside `osier.jobs` imports the queue
+  library.
+- **Path to a separate job service (planned for scale).** The service would own the
+  backend and the worker loop (`jobs/worker.py`), read queued runs per tenant, and
+  call `execute_run` (in-process via the osier library, or through an internal API
+  wrapping it). Nothing in the engine changes; tenant settings stay in the tenant
+  schema. Open choices for that step: one shared, partitioned queue (e.g. DBOS
+  partitioned queues or Hatchet round-robin concurrency) vs. keeping per-tenant
+  queues; and per-tenant database roles for the service, which matter more for
+  isolation than queue placement.
 - **Engine: Procrastinate** (MIT, Postgres-only, psycopg 3; pinned `<3.11`) instead of
   our own queue. It provides workers, retries, locks, LISTEN/NOTIFY, heartbeats.
   Its SQL is unqualified, so its connection uses `search_path = j_<hex>` only, and

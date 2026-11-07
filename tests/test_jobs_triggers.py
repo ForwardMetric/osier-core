@@ -9,7 +9,8 @@ from conftest import DATABASE_URL, agent_for
 from psycopg import sql
 
 from osier.errors import OsierError
-from osier.jobs import JobSettingsService, Worker, jobs_schema, list_jobs
+from osier.jobs import JobSettingsService, Worker, default_backend, list_jobs
+from osier.jobs.procrastinate_backend import jobs_schema
 from osier.workflows import WorkflowError
 
 ON_NEW_LEAD = {
@@ -38,7 +39,9 @@ ON_NEW_LEAD = {
 
 class _SyncWorker:
     def __init__(self, tenant):
-        self.worker = Worker(DATABASE_URL, lambda: [tenant])
+        connect = lambda: psycopg.connect(DATABASE_URL, autocommit=True)  # noqa: E731
+        self.backend = default_backend(DATABASE_URL, connect)
+        self.worker = Worker(self.backend, lambda: [tenant], connect)
 
     def run_until_idle(self):
         return asyncio.run(self.worker.run_until_idle())
@@ -276,7 +279,7 @@ def test_unexpected_errors_retry_then_fail_the_run(crm, conn, worker, monkeypatc
     conn.execute(sql.SQL("UPDATE {} SET scheduled_at = now()").format(jobs_table(crm)))
     worker.run_until_idle()
     assert len(calls) == 2
-    [job] = list_jobs(DATABASE_URL, crm)
+    [job] = list_jobs(default_backend(DATABASE_URL), crm)
     assert job["status"] == "failed" and job["attempts"] == 2
     failed = crm.workflows.get_run(run["run_id"])
     assert failed["status"] == "failed" and "database went away" in failed["error"]["message"]
@@ -302,14 +305,15 @@ def test_handing_over_twice_does_not_run_twice(crm, worker):
         )
     )
     worker.run_until_idle()
-    assert len(list_jobs(DATABASE_URL, crm)) == 1
+    assert len(list_jobs(default_backend(DATABASE_URL), crm)) == 1
     assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
 
 
 def test_jobs_of_a_crashed_worker_are_retried(crm, conn, worker):
     from test_workflows import QUALIFY
 
-    from osier.jobs import JobSettings, TenantQueue
+    from osier.jobs import JobSettings
+    from osier.jobs.procrastinate_backend import TenantQueue
 
     crm.workflows.save(QUALIFY)
     lead = crm.records.create("lead", {"family_name": "Doe"})
@@ -353,7 +357,7 @@ def test_job_settings_need_jobs_manage_and_a_person(crm, make_user, boot):
         JobSettingsService(member).update({"concurrency": 3})
     assert err.value.code == "MISSING_PERMISSION"
     with pytest.raises(OsierError) as err:
-        list_jobs(DATABASE_URL, member)
+        list_jobs(default_backend(DATABASE_URL), member)
     assert err.value.code == "MISSING_PERMISSION"
     agent = crm.as_principal(agent_for(boot.admin_user_id))
     with pytest.raises(OsierError) as err:
@@ -395,7 +399,7 @@ def test_paused_tenant_queues_but_does_not_run(crm, worker):
     run = crm.workflows.start("qualify-lead", {"lead_id": lead["id"]}, background=True)
     worker.run_until_idle()
     assert crm.workflows.get_run(run["run_id"])["status"] == "queued"
-    assert [j["status"] for j in list_jobs(DATABASE_URL, crm)] == ["todo"]
+    assert [j["status"] for j in list_jobs(default_backend(DATABASE_URL), crm)] == ["todo"]
     JobSettingsService(crm).update({"paused": False})
     worker.run_until_idle()
     assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
