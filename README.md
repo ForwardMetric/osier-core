@@ -125,7 +125,9 @@ from osier import Session, bootstrap_tenant
 
 conn = psycopg.connect("postgresql://osier:osier@localhost:5432/osier_test", autocommit=True)
 boot = bootstrap_tenant(
-    conn, organization_name="Acme Lending", admin_email="ada@acme.test",
+    conn,
+    organization_name="Acme Lending",
+    admin_email="ada@acme.test",
     admin_display_name="Ada Lovelace",
 )
 admin = Session(conn, boot.tenant, boot.admin)
@@ -134,8 +136,14 @@ install = admin.packages.propose_install(["case_management"])  # adds crm automa
 admin.packages.apply(install.id, diff_hash=install.diff_hash)
 
 lead = admin.records.create("lead", {"family_name": "Doe", "company_name": "Globex"})
-print(admin.records.query({"object": "lead", "filters": [
-    {"field": "company_name", "op": "contains", "value": "glob"}]}))
+print(
+    admin.records.query(
+        {
+            "object": "lead",
+            "filters": [{"field": "company_name", "op": "contains", "value": "glob"}],
+        }
+    )
+)
 ```
 
 ## Development
