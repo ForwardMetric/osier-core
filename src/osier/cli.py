@@ -471,6 +471,70 @@ def cmd_connections_share(args: argparse.Namespace) -> None:
     _print(_connectors(DevConfig.load()).set_visibility(args.name, args.visibility, args.role))
 
 
+def cmd_skills_list(args: argparse.Namespace) -> None:
+    for skill in _admin(DevConfig.load()).skills.list():
+        print(
+            f"{skill['name']:<32} v{skill['version']:<3} {skill['status']:<9} "
+            f"{skill['visibility']:<13} {skill['description'][:70]}"
+        )
+
+
+def cmd_skills_show(args: argparse.Namespace) -> None:
+    print(_admin(DevConfig.load()).skills.get(args.name, include_inactive=True)["skill_md"])
+
+
+def _save_skill(text: str, args: argparse.Namespace, source: dict[str, Any] | None) -> None:
+    session = _admin(DevConfig.load())
+    preview = session.skills.preview(text)
+    print(
+        f"{preview['action'].capitalize()} skill {preview['name']!r} "
+        f"(license: {preview['license'] or 'not stated'})"
+    )
+    print(f"  {preview['description']}")
+    if not _confirm("Save it?", args.yes):
+        print("Not saved.")
+        return
+    _print(
+        session.skills.save(
+            text,
+            visibility=args.visibility or "organization",
+            visible_roles=args.role,
+            source=source,
+        )
+    )
+
+
+def cmd_skills_add(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    path = Path(args.path)
+    if path.is_dir():
+        extra = sorted(p.name for p in path.iterdir() if p.name != "SKILL.md")
+        if extra:
+            print(f"Only SKILL.md is imported; skipped: {', '.join(extra)}")
+        path = path / "SKILL.md"
+    _save_skill(path.read_text(), args, {"type": "file", "path": str(path)})
+
+
+def cmd_skills_import(args: argparse.Namespace) -> None:
+    fetched = _admin(DevConfig.load()).skills.fetch(args.url)
+    if fetched["skipped_files"]:
+        print(f"Not imported (not supported yet): {', '.join(fetched['skipped_files'])}")
+    _save_skill(fetched["skill_md"], args, fetched["source"])
+
+
+def cmd_skills_status(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).skills.set_status(args.name, args.status))
+
+
+def cmd_skills_share(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).skills.share(args.name, args.visibility, args.role))
+
+
+def cmd_skills_versions(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).skills.versions(args.name))
+
+
 def cmd_connections_list(args: argparse.Namespace) -> None:
     _print(_connectors(DevConfig.load()).list_connections())
 
@@ -637,6 +701,36 @@ def build_parser() -> argparse.ArgumentParser:
     review_p.add_argument("name")
     review_p.add_argument("-y", "--yes", action="store_true")
     review_p.set_defaults(func=cmd_connections_review)
+
+    skills = sub.add_parser("skills", help="the organization's skill library").add_subparsers(
+        dest="skills_command", required=True
+    )
+    skills.add_parser("list").set_defaults(func=cmd_skills_list)
+    for name, func, help_text in (
+        ("show", cmd_skills_show, "print a skill's SKILL.md"),
+        ("versions", cmd_skills_versions, "version history"),
+    ):
+        p = skills.add_parser(name, help=help_text)
+        p.add_argument("name")
+        p.set_defaults(func=func)
+    for name, func, arg, help_text in (
+        ("add", cmd_skills_add, "path", "add or update from a SKILL.md file or skill folder"),
+        ("import", cmd_skills_import, "url", "import from a URL or GitHub file/folder"),
+    ):
+        p = skills.add_parser(name, help=help_text)
+        p.add_argument(arg)
+        _visibility_args(p)
+        p.add_argument("-y", "--yes", action="store_true")
+        p.set_defaults(func=func)
+    st = skills.add_parser("status", help="enable, disable, or retire a skill")
+    st.add_argument("name")
+    st.add_argument("status", choices=["active", "disabled", "retired"])
+    st.set_defaults(func=cmd_skills_status)
+    sh = skills.add_parser("share", help="change who may use a skill")
+    sh.add_argument("name")
+    sh.add_argument("visibility", choices=["private", "roles", "organization"])
+    sh.add_argument("--role", action="append")
+    sh.set_defaults(func=cmd_skills_share)
 
     out = sub.add_parser("outbox", help="recent emails and connector actions")
     out.add_argument("--limit", type=int, default=20)

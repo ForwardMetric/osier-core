@@ -420,3 +420,56 @@ def _free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+SKILL = {
+    "name": "qualify-lead",
+    "description": "Qualify a new lead. Use when a lead arrives without a status decision.",
+    "instructions": "# Qualify a lead\n\n1. Check company size.\n2. Set status.",
+    "license": "MIT",
+}
+
+
+def test_skill_saved_in_chat_after_confirmation(server):
+    assert call(server, "list_skills") == {"skills": [], "count": 0}
+    declined = call(server, "save_skill", _answer="decline", **SKILL)
+    assert "decline" in json.dumps(declined)  # the MCP SDK reports the decline
+    assert call(server, "list_skills")["count"] == 0
+
+    saved = call(server, "save_skill", _answer="accept", **SKILL)
+    assert saved["confirmed_by_user"] and saved["version"] == 1
+    assert "Qualify a lead" in prompts[0] and "Create skill" in prompts[0]
+    listed = call(server, "list_skills")["skills"]
+    assert [s["name"] for s in listed] == ["qualify-lead"]
+    assert "Check company size" in call(server, "get_skill", name="qualify-lead")["instructions"]
+
+    again = call(server, "save_skill", _answer="accept", **{**SKILL, "instructions": "v2 text"})
+    assert again["version"] == 2 and "Update skill" in prompts[0]
+
+
+def test_skill_without_prompt_is_not_saved(server):
+    result = call(server, "save_skill", **SKILL)
+    assert result["error"]["code"] == "CONFIRMATION_UNAVAILABLE"
+    assert call(server, "list_skills")["count"] == 0
+
+
+def test_skill_settings_change_in_chat(server):
+    call(server, "save_skill", _answer="accept", **SKILL)
+    result = call(
+        server, "update_skill_settings", _answer="accept", name="qualify-lead", status="disabled"
+    )
+    assert result["confirmed_by_user"]
+    assert "disable it" in prompts[0]
+
+
+def test_member_can_use_but_not_create_skills(server, config, conn, make_user):
+    call(server, "save_skill", _answer="accept", **SKILL)
+    member = make_user("rep@example.com", "member")
+    member_server = build_server(config, sessions=Sessions(config, conn, member.user_id))
+    assert call(member_server, "list_skills")["count"] == 1
+    assert call(member_server, "get_skill", name="qualify-lead")["name"] == "qualify-lead"
+    refused = call(
+        member_server, "save_skill", _answer="accept", **{**SKILL, "name": "other-skill"}
+    )
+    assert refused["error"]["code"] == "MISSING_PERMISSION"
+    assert prompts == []  # never asked to confirm something they cannot do

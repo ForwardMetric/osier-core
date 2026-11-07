@@ -44,6 +44,13 @@ class Session:
         self.records = RecordService(guarded, tenant, principal)
 
     @property
+    def skills(self) -> Any:
+        """The tenant's skill library (Agent Skills format)."""
+        from .skills import SkillService
+
+        return SkillService(self)
+
+    @property
     def authz(self) -> Authorizer:
         """Roles and permissions of the person behind this session."""
         return Authorizer(self.conn, self.tenant, self.principal)

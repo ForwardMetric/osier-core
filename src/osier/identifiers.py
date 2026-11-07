@@ -57,6 +57,10 @@ ENGINE_TABLES = frozenset(
         "connector_visibility",
         "connector_oauth_states",
         "meta_role_permissions",
+        "meta_engine_migrations",
+        "meta_skills",
+        "meta_skill_versions",
+        "skill_visibility",
         "connector_policies",
         "connector_calls",
     }

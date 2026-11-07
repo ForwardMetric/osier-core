@@ -26,6 +26,9 @@ PERMISSIONS: dict[str, str] = {
     "users.manage": "invite users and assign roles",
     "records.use": "read and write business records",
     "actions.request": "have agents send email and use connected apps",
+    "skills.manage": "create, import, change, and share skills",
+    "tools.manage": "configure which tools agents may use",
+    "workflows.manage": "create and change workflows",
 }
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -36,6 +39,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "connections.manage",
         "records.use",
         "actions.request",
+        "skills.manage",
+        "tools.manage",
+        "workflows.manage",
     ),
     "member": ("records.use", "actions.request"),
 }

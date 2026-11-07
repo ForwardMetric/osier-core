@@ -740,7 +740,7 @@ control-plane database and there are no production tenants to roll out to yet.
 
 ---
 
-## 12. Background jobs and workflows
+## 12. Background jobs, workflows, skills, and tools
 
 Two kinds of long-running work run outside the request/response path:
 
@@ -792,7 +792,7 @@ tenant:
 - Job definitions follow the same propose → validate → confirm → apply
   lifecycle as schema changes (§5) and are versioned.
 
-### 12.3 Tool choice (deferred)
+### 12.3 Tool choice (superseded for workflows by §12.4)
 
 | Candidate | Type | Notes |
 |---|---|---|
@@ -806,6 +806,59 @@ per-tenant fairness, operational weight, Python async support, and a license
 compatible with MIT. Prefer **one tool for both kinds** of work. **Deferred:** the full job system is built in M7. Until then, M1 uses a
 minimal implementation behind the interface (enough for index builds and
 backfills).
+
+### 12.4 Workflow engine: LangGraph under osier's own definition (decided)
+
+- **osier owns the workflow definition**, a declarative, versioned JSON document
+  stored as tenant metadata (§12.2): triggers, steps, conditions, approvals.
+  Admins build it in chat; it goes through propose → preview → confirm like
+  schema changes. The definition never contains code.
+- **LangGraph is the execution engine underneath.** At run time osier compiles a
+  definition into a LangGraph `StateGraph`, uses its Postgres checkpointer for
+  durable steps and resume, and its `interrupt()` / `Command(resume=...)` for
+  human approvals. Callers only see osier's interface (§12.1), so the engine can
+  be replaced later.
+- **osier builds around it:** triggers (record events, schedules, manual), the
+  job runner and per-tenant limits, permissions (`workflows.manage`), audit, and
+  agent steps.
+- **Agent steps use the tenant's own Claude API key** (bring your own key),
+  stored through the credential broker like any other secret (rule 12).
+- **Rejected: CrewAI** — telemetry is on by default and its model is
+  role-playing agent crews rather than durable, checkpointed graphs.
+- **To verify when building (data gap):** LangGraph and checkpointer versions to
+  pin, their licenses (expected MIT), the checkpointer's behaviour with many
+  tenants (one table set per tenant schema vs. shared), and whether its
+  connection handling can go through `TenantConnection` or needs its own role.
+
+### 12.5 Skills (built: text only)
+
+A **skill** is reusable instructions for recurring work, in the open Agent
+Skills format (`SKILL.md` with `name` and `description` frontmatter; optional
+`license`, `compatibility`, `metadata`, `allowed-tools`), so published skills,
+including Claude's, can be imported.
+
+- **Per tenant.** Stored in engine tables `meta_skills`, `meta_skill_versions`
+  (every save is a new version; history is kept), and `skill_visibility`.
+- **Text only for now.** Skills whose folder contains scripts are refused
+  (`SKILL_HAS_SCRIPTS`); other extra files are skipped and reported. Running
+  skill scripts needs a sandbox and is planned as a later, paid option.
+- **Who.** Everyone may read and follow active skills visible to them
+  (organization, their roles, or their own private ones). Adding, changing,
+  importing, sharing, disabling, and retiring need `skills.manage` (admin and
+  developer by default) and are done by a person: in chat after confirming the
+  full text (and license for imports), or with `osier skills` in the CLI.
+- **Imports** accept https URLs only: a raw `SKILL.md` or a GitHub file or
+  folder. Downloads pass the private-network guard. The source is recorded.
+- **Agents are told** (server instructions) to check `list_skills` at the start
+  of a task and follow a matching skill. Skill text is instructions written by
+  the tenant's people; it never grants permissions; every action it leads to is
+  checked as usual.
+
+### 12.6 Tools per tenant (planned)
+
+Tenants already add tools by connecting MCP servers (§13.2). Next: a tenant
+tool catalogue (`tools.manage`) with declarative HTTP tools; custom code
+functions come later, together with the skill script sandbox.
 
 ---
 
@@ -1034,7 +1087,7 @@ the implementation is written from first principles.
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
-| **M7 — Jobs & agent workflows** | Metadata-driven job types; durable agent workflows; tool trial (§12.3); MCP job tools; workflows as metadata (§12.2). |
+| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5). **Next:** workflows on LangGraph (§12.4) with triggers, approvals and agent steps on the tenant's Claude key; metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single

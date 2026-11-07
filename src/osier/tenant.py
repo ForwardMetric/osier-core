@@ -282,7 +282,91 @@ _ENGINE_MIGRATIONS = [
         completed_at        timestamptz
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_engine_migrations (
+        name        text PRIMARY KEY,
+        applied_at  timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_skills (
+        id           uuid PRIMARY KEY,
+        name         text NOT NULL UNIQUE,
+        description  text NOT NULL,
+        body         text NOT NULL,
+        frontmatter  jsonb NOT NULL DEFAULT '{{}}',
+        license      text,
+        version      integer NOT NULL DEFAULT 1,
+        status       text NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'disabled', 'retired')),
+        visibility   text NOT NULL DEFAULT 'organization'
+                     CHECK (visibility IN ('private', 'roles', 'organization')),
+        owner_user   uuid,
+        source       jsonb NOT NULL,
+        created_by   uuid NOT NULL,
+        updated_by   uuid NOT NULL,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        updated_at   timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_skill_versions (
+        skill_id     uuid NOT NULL,
+        version      integer NOT NULL,
+        name         text NOT NULL,
+        description  text NOT NULL,
+        body         text NOT NULL,
+        frontmatter  jsonb NOT NULL,
+        changed_by   uuid NOT NULL,
+        changed_by_type text NOT NULL,
+        change       text NOT NULL,
+        changed_at   timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (skill_id, version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.skill_visibility (
+        skill_id  uuid NOT NULL,
+        role_key  text NOT NULL,
+        PRIMARY KEY (skill_id, role_key)
+    )
+    """,
 ]
+
+
+# One-time data migrations, recorded in meta_engine_migrations so a tenant's later
+# changes (e.g. removing a granted permission) are never undone. Append only.
+_DATA_MIGRATIONS: list[tuple[str, list[tuple[str, str]]]] = [
+    (
+        "2026-11-grant-skills-tools-workflows",
+        [
+            (role, permission)
+            for role in ("admin", "developer")
+            for permission in ("skills.manage", "tools.manage", "workflows.manage")
+        ],
+    ),
+]
+
+
+def _run_data_migrations(conn: psycopg.Connection, tenant: Tenant) -> None:
+    done_table = sql.Identifier(tenant.schema, "meta_engine_migrations")
+    grants = sql.Identifier(tenant.schema, "meta_role_permissions")
+    for name, rows in _DATA_MIGRATIONS:
+        claimed = conn.execute(
+            sql.SQL(
+                "INSERT INTO {} (name) VALUES (%s) ON CONFLICT DO NOTHING RETURNING name"
+            ).format(done_table),
+            (name,),
+        ).fetchone()
+        if claimed is None:
+            continue
+        for role, permission in rows:
+            conn.execute(
+                sql.SQL(
+                    "INSERT INTO {} (role_key, permission) VALUES (%s, %s) ON CONFLICT DO NOTHING"
+                ).format(grants),
+                (role, permission),
+            )
 
 
 def upgrade_engine_tables(conn: psycopg.Connection, tenant: Tenant) -> None:
@@ -311,6 +395,7 @@ def upgrade_engine_tables(conn: psycopg.Connection, tenant: Tenant) -> None:
                         ).format(sql.Identifier(tenant.schema, "meta_role_permissions")),
                         (role, permission),
                     )
+        _run_data_migrations(conn, tenant)
 
 
 def provision_tenant(conn: psycopg.Connection, tenant_id: uuid.UUID | None = None) -> Tenant:

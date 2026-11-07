@@ -150,6 +150,26 @@ give osier its address:
 uv run osier dev oauth-redirect https://<your-tunnel-host>
 ```
 
+### Skills
+
+Skills are instructions for recurring work, in the Agent Skills `SKILL.md`
+format. Ask Claude to write one ("save a skill for qualifying leads"), or to
+import a published one, then confirm the full text in the prompt. Only text
+skills are supported; skills that include scripts are refused for now. From the
+terminal:
+
+```bash
+uv run osier skills import https://github.com/<owner>/<repo>/tree/main/<skill-folder>
+```
+
+```bash
+uv run osier skills add path/to/skill-folder
+```
+
+`osier skills list | show | versions | status | share` manage the library.
+Adding and changing skills needs the Developer or Admin role; everyone can use
+the skills shared with them.
+
 ## MCP tools
 
 | Tool | What it does |
@@ -163,6 +183,8 @@ uv run osier dev oauth-redirect https://<your-tunnel-host>
 | `list_connections`, `send_email`, `get_connector_call` | Email through your connections; sends wait for approval and are logged as activities |
 | `list_connector_tools`, `call_connector_tool` | Use connected apps' MCP tools: pinned definitions, per-tool approval policy, untrusted results |
 | `connect_app`, `finish_app_connection`, `share_connection` | Connect apps with OAuth sign-in and decide who may use them |
+| `list_skills`, `get_skill` | Your organization's skills (instructions for recurring work); agents check them first |
+| `save_skill`, `import_skill`, `update_skill_settings` | Add, update, import (GitHub or a URL), share, disable skills; text only; you confirm |
 | `whoami`, `list_pending_approvals`, `approve_pending` | Your roles and permissions; review and confirm waiting items |
 
 ## What is implemented
@@ -180,11 +202,14 @@ uv run osier dev oauth-redirect https://<your-tunnel-host>
   server (remote over HTTPS with token headers, or a local command) with pinned
   tools, per-tool policies, and change detection; encrypted credentials;
   capability + purpose routing; approval queue; audit; automatic CRM logging.
+- **Skills:** text skills in the Agent Skills (`SKILL.md`) format per tenant, with
+  versions, visibility, import from GitHub, and `osier skills` commands.
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
 Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone
 signing in to osier), object- and field-level permissions, views, marketing email,
-multi-database placement, reporting, jobs and workflows.
+multi-database placement, reporting, jobs and workflows (LangGraph, next), skills with
+scripts.
 
 ## Using the engine from Python
 

@@ -31,6 +31,8 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/connectors/` — connector framework, SMTP and dev outbox, credential broker,
   routing, approvals, audit (`service.py`), MCP servers as connectors (`mcp_service.py`,
   `mcp_remote.py`), OAuth sign-in (`oauth.py`, `oauth_service.py`, `oauth_callback.py`)
+- `src/osier/skills.py` — text skills (Agent Skills `SKILL.md`): parse, import, versions,
+  visibility (`SkillService`, via `session.skills`)
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
