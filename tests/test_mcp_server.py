@@ -535,14 +535,35 @@ def test_job_settings_in_chat(server):
     assert bad["error"]["code"] == "JOB_SETTINGS_INVALID" and prompts == []
 
 
-def test_ai_status_in_chat_never_shows_the_key(server, config, conn):
+def test_ai_status_and_profiles_in_chat(server, config, conn):
     from osier.ai import AIService
     from osier.connectors.vault import CredentialBroker
 
     status = call(server, "get_ai_status")
-    assert status["api_key_configured"] is False and status["settings"]["model"] is None
+    assert status["connections"] == [] and status["default_profile"] is None
     admin = config.session(config.admin(), conn)
     broker = CredentialBroker(open(config.key_file, "rb").read().strip())
-    AIService(admin, broker).update({"model": "test-model"}, api_key="sk-secret-value")
+    AIService(admin, broker).connect(
+        "main", provider="openai", models=["m1", "m2"], api_key="sk-secret-value"
+    )
+    assert (
+        call(server, "set_ai_profile", name="fast", connection="main", model="m2")["error"]["code"]
+        == "CONFIRMATION_UNAVAILABLE"
+    )
+    done = call(
+        server,
+        "set_ai_profile",
+        _answer="accept",
+        name="fast",
+        connection="main",
+        model="m2",
+        default=True,
+    )
+    assert done["default"] and "main / m2" in prompts[0]
+    bad = call(
+        server, "set_ai_profile", _answer="accept", name="x", connection="main", model="other"
+    )
+    assert bad["error"]["code"] == "AI_MODEL_NOT_ALLOWED" and prompts == []
     status = call(server, "get_ai_status")
-    assert status["api_key_configured"] is True and "sk-secret" not in json.dumps(status)
+    assert status["connections"][0]["api_key_configured"] is True
+    assert "sk-secret" not in json.dumps(status)

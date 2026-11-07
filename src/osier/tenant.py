@@ -411,24 +411,52 @@ _ENGINE_MIGRATIONS = [
     """,
     """
     CREATE TABLE IF NOT EXISTS {s}.meta_ai_settings (
-        id                 integer PRIMARY KEY CHECK (id = 1),
+        id          integer PRIMARY KEY CHECK (id = 1),
+        settings    jsonb NOT NULL,
+        updated_by  uuid NOT NULL,
+        updated_at  timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.ai_connections (
+        id                 uuid PRIMARY KEY,
+        name               text NOT NULL UNIQUE,
+        provider           text NOT NULL,
+        api_base           text,
         settings           jsonb NOT NULL,
         secret_ciphertext  bytea,
         key_id             text,
+        status             text NOT NULL DEFAULT 'active'
+                           CHECK (status IN ('active', 'disabled', 'removed')),
+        created_by         uuid NOT NULL,
         updated_by         uuid NOT NULL,
+        created_at         timestamptz NOT NULL DEFAULT now(),
         updated_at         timestamptz NOT NULL DEFAULT now()
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS {s}.ai_profiles (
+        name           text PRIMARY KEY,
+        connection_id  uuid NOT NULL,
+        model          text NOT NULL,
+        effort         text NOT NULL,
+        description    text NOT NULL DEFAULT '',
+        updated_by     uuid NOT NULL,
+        updated_at     timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS {s}.ai_usage (
-        id                 bigserial PRIMARY KEY,
-        run_id             uuid,
-        step_id            text,
-        model              text NOT NULL,
-        input_tokens       integer NOT NULL,
-        output_tokens      integer NOT NULL,
-        cache_read_tokens  integer NOT NULL DEFAULT 0,
-        at                 timestamptz NOT NULL DEFAULT now()
+        id             bigserial PRIMARY KEY,
+        run_id         uuid,
+        step_id        text,
+        connection_id  uuid,
+        profile        text,
+        model          text NOT NULL,
+        input_tokens   integer NOT NULL,
+        output_tokens  integer NOT NULL,
+        cost_usd       numeric(14, 6),
+        at             timestamptz NOT NULL DEFAULT now()
     )
     """,
     """

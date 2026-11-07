@@ -132,7 +132,8 @@ class OutputField(_Model):
 
 
 class AgentStep(_Step):
-    """An AI step: Claude, with the tenant's own API key, works on ``instructions``
+    """An AI step: a model from one of the tenant's AI connections (chosen through a
+    model profile) works on ``instructions``
     (and an optional skill), may use the listed record tools on the listed objects
     with the run's permissions, and must return ``output`` (checked against the
     declared fields). Always runs in the background worker."""
@@ -146,6 +147,11 @@ class AgentStep(_Step):
     )
     objects: list[str] = Field(default_factory=list, max_length=10)
     output: dict[str, OutputField] = Field(min_length=1, max_length=30)
+    model: str | None = Field(
+        default=None,
+        max_length=40,
+        description="AI model profile to use (osier ai profiles); default profile if empty.",
+    )
     max_turns: int = Field(default=6, ge=1, le=20)
     effort: Literal["low", "medium", "high"] | None = None
 

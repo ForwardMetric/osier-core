@@ -41,8 +41,8 @@ uv run ruff check . && uv run ruff format --check .
   `settings.py` (per-tenant settings), `runner.py` (`execute_run`, the engine entry
   point), `worker.py` (`osier worker` loop), `procrastinate_backend.py` (today's backend,
   one queue schema `j_<hex>` per tenant)
-- `src/osier/ai.py` — the tenant's Claude API key (encrypted), model, limits, usage;
-  `src/osier/workflows/agent_step.py` — the AI step tool loop
+- `src/osier/ai.py` — AI model connections (any provider via LiteLLM; encrypted keys),
+  model profiles, limits, usage; `src/osier/workflows/agent_step.py` — the AI step loop
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
@@ -106,8 +106,14 @@ uv run ruff check . && uv run ruff format --check .
     after a crashed worker or a retry. Each tenant's queue stays in its own `j_<hex>`
     schema; never read or write queue tables through `TenantConnection` or from
     another tenant's queue. Tenant job settings stay within `JobSettings` limits.
-19. **AI steps run on the tenant's key and with the run's permissions.** Tools in an
-    AI step go through `RecordService` as the run principal, limited to the step's
-    objects; results pass `submit_result` validation before use; the monthly token
-    cap is checked before every call. Never put model ids in code (tenants choose the
-    model), never return or log the key, and test with a fake client, not the live API.
+19. **AI steps run on the tenant's connections and with the run's permissions.** Models
+    are reached only through LiteLLM (`osier.ai`), never provider SDKs directly. Tools in
+    an AI step go through `RecordService` as the run principal, limited to the step's
+    objects; results pass `submit_result` validation before use; connection limits are
+    checked before every call. Never put model ids in code (tenants choose models in
+    profiles), never return or log keys, and test with a scripted fake completion, not a
+    live provider.
+20. **Use established libraries before writing our own.** When a maintained library
+    with an MIT-compatible license does the job (queues, LLM access, expression
+    evaluation, ...), use it behind a small interface instead of building from scratch.
+    Record the choice, its license, and its costs in ARCHITECTURE.md.

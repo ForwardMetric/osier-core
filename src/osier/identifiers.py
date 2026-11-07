@@ -68,6 +68,8 @@ ENGINE_TABLES = frozenset(
         "meta_job_settings",
         "meta_ai_settings",
         "ai_usage",
+        "ai_connections",
+        "ai_profiles",
         "workflow_run_events",
         "workflow_checkpoints",
         "workflow_checkpoint_writes",

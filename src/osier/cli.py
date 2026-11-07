@@ -611,7 +611,8 @@ def cmd_worker(args: argparse.Namespace) -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = DevConfig.load()
-    ai.configure_runtime(broker=config.broker())  # AI steps decrypt the tenant's key
+    # AI steps decrypt the tenant's connection keys.
+    ai.configure_runtime(broker=config.broker(), allow_private_network=config.allow_private_network)
     worker = _worker(config)
     if args.once:
         _print(asyncio.run(worker.run_until_idle()))
@@ -692,62 +693,95 @@ def cmd_workflows_versions(args: argparse.Namespace) -> None:
     _print(_admin(DevConfig.load()).workflows.versions(args.name))
 
 
-def cmd_ai_setup(args: argparse.Namespace) -> None:
+def _ai(config: DevConfig) -> Any:
+    from . import ai
+
+    ai.configure_runtime(broker=config.broker(), allow_private_network=config.allow_private_network)
+    return ai.AIService(_admin(config), config.broker())
+
+
+def cmd_ai_connect(args: argparse.Namespace) -> None:
     import getpass
 
-    from .ai import AIService
-
-    config = DevConfig.load()
-    service = AIService(_admin(config), config.broker())
-    model = args.model or input("Claude model id to use: ").strip()
-    print(
-        "Paste the organization's Claude API key (input is hidden; it is stored "
-        "encrypted and never shown again)."
+    service = _ai(DevConfig.load())
+    key = None
+    if not args.no_key:
+        print("Paste the API key (input is hidden; it is stored encrypted and never shown).")
+        key = getpass.getpass("API key: ")
+    settings: dict[str, Any] = {}
+    for name in (
+        "monthly_token_limit",
+        "monthly_budget_usd",
+        "input_usd_per_million",
+        "output_usd_per_million",
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            settings[name] = value
+    result = service.connect(
+        args.name,
+        provider=args.provider,
+        models=args.model,
+        api_key=key,
+        api_base=args.api_base,
+        **settings,
     )
-    key = getpass.getpass("API key: ")
-    result = service.update({"model": model}, api_key=key)
+    _print(result)
     print(
-        f"Saved. Model: {result['settings']['model']}; API key configured: "
-        f"{result['api_key_configured']}."
+        f"Next: give it a profile, e.g. `osier ai profile default --connection {args.name} "
+        f"--model {args.model[0]} --default`."
+    )
+
+
+def cmd_ai_update(args: argparse.Namespace) -> None:
+    changes: dict[str, Any] = {}
+    for pair in args.set or []:
+        key, _, value = pair.partition("=")
+        changes[key] = value
+    if args.model:
+        changes["models"] = args.model
+    _print(_ai(DevConfig.load()).update_connection(args.name, changes))
+
+
+def cmd_ai_disconnect(args: argparse.Namespace) -> None:
+    if _confirm(f"Remove AI connection {args.name!r} and its key?", args.yes):
+        _print(_ai(DevConfig.load()).disconnect(args.name))
+
+
+def cmd_ai_profile(args: argparse.Namespace) -> None:
+    service = _ai(DevConfig.load())
+    if args.remove:
+        _print(service.remove_profile(args.name))
+        return
+    _print(
+        service.set_profile(
+            name=args.name,
+            connection=args.connection,
+            model=args.model,
+            effort=args.effort,
+            description=args.description or "",
+            default=args.default,
+        )
     )
 
 
 def cmd_ai_status(args: argparse.Namespace) -> None:
-    from .ai import AIService
-
-    _print(AIService(_admin(DevConfig.load())).status())
-
-
-def cmd_ai_settings(args: argparse.Namespace) -> None:
-    from .ai import AIService
-
-    config = DevConfig.load()
-    service = AIService(_admin(config), config.broker())
-    changes: dict[str, Any] = {}
-    for pair in args.set or []:
-        key, _, value = pair.partition("=")
-        if key == "api_key":
-            raise OsierError("Set the API key with `osier ai setup`.", code="AI_SETTINGS_INVALID")
-        changes[key] = {"true": True, "false": False}.get(value.lower(), value)
-    preview = service.preview(changes)
-    for key, change in preview["changes"].items():
-        print(f"  {key}: {change['from']} -> {change['to']}")
-    if not preview["changes"]:
-        _print(preview["settings"])
-        return
-    if not _confirm("Apply?", args.yes):
-        print("Not changed.")
-        return
-    service.update(changes)
-    print("Saved.")
-
-
-def cmd_ai_remove_key(args: argparse.Namespace) -> None:
-    from .ai import AIService
-
-    if _confirm("Remove the AI API key? AI steps will fail until a new one is set.", args.yes):
-        AIService(_admin(DevConfig.load())).remove_key()
-        print("Removed.")
+    status = _ai(DevConfig.load()).status()
+    for c in status["connections"]:
+        cost = "" if c["cost_usd_this_month"] is None else f", ${c['cost_usd_this_month']:.4f}"
+        print(
+            f"connection {c['name']:<16} {c['provider']:<12} {c['status']:<8} key: "
+            f"{'yes' if c['api_key_configured'] else 'no'}  models: {', '.join(c['models'])}  "
+            f"this month: {c['tokens_this_month']}/{c['monthly_token_limit']} tokens{cost}"
+        )
+    for p in status["profiles"]:
+        mark = " (default)" if p["default"] else ""
+        print(
+            f"profile    {p['name']:<16} -> {p['connection']} / {p['model']}  "
+            f"effort {p['effort']}{mark}"
+        )
+    if not status["connections"]:
+        print("No AI connections. Add one with `osier ai connect`.")
 
 
 def cmd_connections_list(args: argparse.Namespace) -> None:
@@ -984,21 +1018,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("status", choices=["active", "disabled", "retired"])
     p.set_defaults(func=cmd_workflows_status)
 
-    aip = sub.add_parser("ai", help="the organization's Claude API key, model, and limits")
+    aip = sub.add_parser("ai", help="AI model connections, profiles, and limits")
     aisub = aip.add_subparsers(dest="ai_command", required=True)
-    p = aisub.add_parser("setup", help="set the model and API key (key prompt is hidden)")
+    p = aisub.add_parser("connect", help="add an AI connection (key prompt is hidden)")
+    p.add_argument("name")
+    p.add_argument(
+        "--provider",
+        required=True,
+        help="LiteLLM provider: openai, anthropic, openrouter, azure, groq, ...",
+    )
+    p.add_argument("--model", action="append", required=True, help="allowed model (repeat)")
+    p.add_argument("--api-base", help="base URL, e.g. for a self-hosted OpenAI-compatible server")
+    p.add_argument("--no-key", action="store_true", help="the endpoint needs no API key")
+    p.add_argument("--monthly-token-limit", type=int)
+    p.add_argument("--monthly-budget-usd")
+    p.add_argument("--input-usd-per-million")
+    p.add_argument("--output-usd-per-million")
+    p.set_defaults(func=cmd_ai_connect)
+    p = aisub.add_parser("update", help="change a connection's models, prices, or limits")
+    p.add_argument("name")
+    p.add_argument("--model", action="append", help="replace the allowed models (repeat)")
+    p.add_argument("--set", action="append", help="NAME=VALUE, e.g. monthly_budget_usd=50")
+    p.set_defaults(func=cmd_ai_update)
+    p = aisub.add_parser("disconnect", help="remove a connection and its key")
+    p.add_argument("name")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.set_defaults(func=cmd_ai_disconnect)
+    p = aisub.add_parser("profile", help="create or change a model profile used by AI steps")
+    p.add_argument("name")
+    p.add_argument("--connection")
     p.add_argument("--model")
-    p.set_defaults(func=cmd_ai_setup)
-    aisub.add_parser("status", help="settings and this month's usage").set_defaults(
+    p.add_argument("--effort", choices=["low", "medium", "high"], default="medium")
+    p.add_argument("--description")
+    p.add_argument("--default", action="store_true", help="use it when a step names none")
+    p.add_argument("--remove", action="store_true")
+    p.set_defaults(func=cmd_ai_profile)
+    aisub.add_parser("status", help="connections, profiles, and usage").set_defaults(
         func=cmd_ai_status
     )
-    p = aisub.add_parser("settings", help="show or change AI settings")
-    p.add_argument("--set", action="append", help="NAME=VALUE, e.g. monthly_token_limit=500000")
-    p.add_argument("-y", "--yes", action="store_true")
-    p.set_defaults(func=cmd_ai_settings)
-    p = aisub.add_parser("remove-key", help="remove the stored API key")
-    p.add_argument("-y", "--yes", action="store_true")
-    p.set_defaults(func=cmd_ai_remove_key)
 
     w = sub.add_parser("worker", help="run background jobs and workflow triggers")
     w.add_argument("--once", action="store_true", help="run until idle, then exit")

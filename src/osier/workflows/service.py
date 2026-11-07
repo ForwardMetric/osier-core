@@ -173,6 +173,7 @@ class WorkflowService:
         parsed = parse_definition(definition)
         objects = validate_definition(parsed, self._session.snapshot())
         self._check_roles(parsed)
+        self._check_profiles(parsed)
         with self._conn.cursor(row_factory=dict_row) as cur:
             existing = cur.execute(
                 sql.SQL("SELECT version FROM {} WHERE name = %s").format(self._t("meta_workflows")),
@@ -188,6 +189,29 @@ class WorkflowService:
             "triggers": [describe_trigger(t) for t in parsed.triggers],
             "definition": parsed.dump(),
         }
+
+    def _check_profiles(self, definition: Definition) -> None:
+        wanted = {s.model for s in definition.steps if isinstance(s, AgentStep)}
+        if not wanted:
+            return
+        from ..ai import AIService
+
+        ai = AIService(self._session)
+        known = {p["name"] for p in ai.profiles()}
+        if None in wanted and ai.default_profile() is None:
+            raise WorkflowError(
+                "This workflow has AI steps but no default AI model profile is set.",
+                code="AI_NOT_CONFIGURED",
+                hint="Set one with `osier ai profile <name> ... --default`, or name a profile "
+                "in the step's 'model'.",
+            )
+        if unknown := sorted(w for w in wanted if w is not None and w not in known):
+            raise WorkflowError(
+                f"Unknown AI model profiles {unknown}.",
+                field="model",
+                code="AI_PROFILE_NOT_FOUND",
+                expected=sorted(known),
+            )
 
     def _check_roles(self, definition: Definition) -> None:
         wanted = {r for s in definition.steps if isinstance(s, Approval) for r in s.approver_roles}
@@ -855,6 +879,7 @@ def describe_step(step: Any) -> str:
             else "no tools"
         )
         skill = f", following skill {step.skill!r}" if step.skill else ""
+        skill += f", model profile {step.model!r}" if step.model else ", default model profile"
         return (
             f"{step.id}: AI step ({tools}{skill}) returning {', '.join(step.output)}; "
             "uses this organization's AI tokens"

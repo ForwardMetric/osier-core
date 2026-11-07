@@ -212,21 +212,28 @@ uv run osier jobs settings --set concurrency=4
 
 ### AI steps
 
-Workflows can include AI steps that use your organization's own Claude API key. An
-administrator sets the key and model once (the key prompt is hidden; the key is
-stored encrypted and never shown again):
+Workflows can include AI steps that use your organization's own model connections:
+any provider LiteLLM supports (OpenAI, Anthropic, OpenRouter, Azure, Groq, a
+self-hosted OpenAI-compatible server, ...). An administrator adds connections (the key
+prompt is hidden; keys are stored encrypted and never shown again) and names model
+profiles that steps refer to:
 
 ```bash
-uv run osier ai setup --model <claude-model-id>
+uv run osier ai connect main --provider openrouter --model <model-a> --model <model-b>
 ```
 
-An AI step gets instructions, optional skill text, the data you pass it, and only the
-record tools and objects you list; it must return the fields you declare, which later
-steps can use (for example in an approval message). AI steps run in the worker and
-count against a monthly token limit (`osier ai settings --set
-monthly_token_limit=...`, `osier ai status`).
-Adding and changing skills needs the Developer or Admin role; everyone can use
-the skills shared with them.
+```bash
+uv run osier ai profile careful --connection main --model <model-a> --effort high --default
+```
+
+```bash
+uv run osier ai profile fast --connection main --model <model-b> --effort low
+```
+
+An AI step names a profile (`"model": "fast"`) or uses the default. It gets
+instructions, optional skill text, the data you pass it, and only the record tools and
+objects you list; it must return the fields you declare. AI steps run in the worker and
+count against each connection's monthly token and dollar limits (`osier ai status`).
 
 ## MCP tools
 

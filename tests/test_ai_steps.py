@@ -1,8 +1,10 @@
-"""AI steps in workflows, with a scripted fake Claude client (no network, no spend)."""
+"""AI steps in workflows, through LiteLLM with scripted responses (no network, no spend).
+
+The fake completion returns real LiteLLM ``ModelResponse`` objects built with LiteLLM's
+own mock mode, so response parsing is tested against the real shapes."""
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 import psycopg
 import pytest
@@ -14,39 +16,56 @@ from osier.connectors.vault import CredentialBroker
 from osier.errors import OsierError
 from osier.jobs import Worker, default_backend
 
-MODEL = "test-model"
+
+def calls(*pairs):
+    return [
+        {
+            "id": f"c{i}",
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)},
+        }
+        for i, (name, args) in enumerate(pairs)
+    ]
 
 
-def text(t):
-    return SimpleNamespace(type="text", text=t)
+class FakeCompletion:
+    """Each script entry: a list of (tool, args) pairs, a str (text reply), a dict with
+    'finish' (e.g. content_filter), or an exception to raise."""
 
-
-def tool(name, args, id_=None):
-    return SimpleNamespace(type="tool_use", name=name, input=args, id=id_ or f"call_{name}")
-
-
-def reply(*blocks, stop="tool_use", usage=(100, 20)):
-    return SimpleNamespace(
-        content=list(blocks),
-        stop_reason=stop,
-        model=MODEL,
-        stop_details=None,
-        usage=SimpleNamespace(
-            input_tokens=usage[0], output_tokens=usage[1], cache_read_input_tokens=0
-        ),
-    )
-
-
-class FakeClient:
-    def __init__(self, script):
+    def __init__(self, *script):
         self.script = list(script)
         self.requests = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
 
-    def create(self, **request):
-        self.requests.append({**request, "messages": list(request["messages"])})
+    def __call__(self, **request):
+        import litellm
+
+        self.requests.append({**request, "messages": [dict(m) for m in request["messages"]]})
         step = self.script.pop(0)
-        return step(request) if callable(step) else step
+        if isinstance(step, Exception):
+            raise step
+        if isinstance(step, dict):
+            response = litellm.completion(
+                model="openai/mock",
+                messages=[{"role": "user", "content": "x"}],
+                mock_response="-",
+                api_key="x",
+            )
+            response.choices[0].finish_reason = step["finish"]
+            return response
+        if isinstance(step, str):
+            return litellm.completion(
+                model="openai/mock",
+                api_key="x",
+                mock_response=step,
+                messages=[{"role": "user", "content": "x"}],
+            )
+        return litellm.completion(
+            model="openai/mock",
+            api_key="x",
+            mock_response="-",
+            mock_tool_calls=calls(*step),
+            messages=[{"role": "user", "content": "x"}],
+        )
 
 
 @pytest.fixture
@@ -56,20 +75,42 @@ def broker():
 
 @pytest.fixture
 def fake(broker):
-    holder = {"client": None, "keys": []}
+    holder = {"completion": None}
 
-    def factory(api_key):
-        holder["keys"].append(api_key)
-        return holder["client"]
+    def completion(**request):
+        return holder["completion"](**request)
 
-    ai.configure_runtime(broker=broker, client_factory=factory)
+    ai.configure_runtime(broker=broker, completion=completion)
     yield holder
-    ai.configure_runtime(broker=None, client_factory=ai._default_client_factory)
+    ai.configure_runtime(broker=None, completion=None)
 
 
 @pytest.fixture
-def ai_ready(crm, broker, fake):
-    AIService(crm, broker).update({"model": MODEL}, api_key="sk-test-secret")
+def ai_ready(crm, broker, fake, monkeypatch):
+    import osier.connectors.netguard as netguard
+
+    monkeypatch.setattr(netguard, "check_destination", lambda *a, **k: None)  # no DNS in tests
+    service = AIService(crm, broker)
+    service.connect(
+        "main",
+        provider="openrouter",
+        models=["vendor/big", "vendor/small"],
+        api_key="sk-test-secret",
+        input_usd_per_million="2",
+        output_usd_per_million="10",
+    )
+    service.connect(
+        "local",
+        provider="openai",
+        models=["local-model"],
+        api_key=None,
+        api_base="https://llm.internal.example.com/v1",
+    )
+    service.set_profile(
+        name="careful", connection="main", model="vendor/big", effort="high", default=True
+    )
+    service.set_profile(name="fast", connection="main", model="vendor/small", effort="low")
+    service.set_profile(name="private", connection="local", model="local-model")
     return crm
 
 
@@ -123,22 +164,19 @@ def test_ai_step_uses_tools_then_submits_and_the_run_continues(ai_ready, fake):
     crm = ai_ready
     crm.workflows.save(ASSESS)
     lead = crm.records.create("lead", {"family_name": "Doe", "company_name": "Acme"})
-    fake["client"] = FakeClient(
+    fake["completion"] = FakeCompletion(
         [
-            reply(
-                text("Checking duplicates."),
-                tool(
-                    "query_records",
-                    {
-                        "query": {
-                            "object": "lead",
-                            "filters": [{"field": "company_name", "value": "Acme"}],
-                        }
-                    },
-                ),
-            ),
-            reply(tool("submit_result", {"decision": "pursue", "reason": "No duplicates."})),
-        ]
+            (
+                "query_records",
+                {
+                    "query": {
+                        "object": "lead",
+                        "filters": [{"field": "company_name", "value": "Acme"}],
+                    }
+                },
+            )
+        ],
+        [("submit_result", {"decision": "pursue", "reason": "No duplicates."})],
     )
     run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
     assert run["status"] == "queued"  # AI steps always run in the worker
@@ -146,57 +184,79 @@ def test_ai_step_uses_tools_then_submits_and_the_run_continues(ai_ready, fake):
     waiting = crm.workflows.get_run(run["run_id"])
     assert waiting["status"] == "waiting", waiting["error"]
     assert waiting["waiting_for"]["message"] == "AI says pursue: No duplicates."
-    assert waiting["steps"]["assess"]["turns"] == 2
-    assert fake["keys"] == ["sk-test-secret"]
-    first = fake["client"].requests[0]
-    assert first["model"] == MODEL and first["output_config"] == {"effort": "medium"}
-    assert [t["name"] for t in first["tools"]] == ["query_records", "submit_result"]
-    assert first["fallbacks"] == "default"
-    assert "Acme" in first["messages"][0]["content"]
-    tool_result = fake["client"].requests[1]["messages"][-1]["content"][0]
-    assert json.loads(tool_result["content"])["count"] == 1
-    status = AIService(crm).status()
-    assert status["tokens_this_month"] == 240 and "sk-test" not in json.dumps(status)
+    assess = waiting["steps"]["assess"]
+    assert assess["turns"] == 2 and assess["model_profile"] == "careful"
+    first, second = fake["completion"].requests
+    assert first["model"] == "openrouter/vendor/big" and first["api_key"] == "sk-test-secret"
+    assert first["reasoning_effort"] == "high" and first["drop_params"] is True
+    assert [t["function"]["name"] for t in first["tools"]] == ["query_records", "submit_result"]
+    assert "Acme" in first["messages"][1]["content"]
+    tool_message = second["messages"][-1]
+    assert tool_message["role"] == "tool" and json.loads(tool_message["content"])["count"] == 1
+    # LiteLLM's mock reports 10 input and 20 output tokens per call; prices 2/10 USD per M.
+    usage = assess["usage"]
+    assert usage["input_tokens"] == 20 and usage["output_tokens"] == 40
+    assert usage["cost_usd"] == pytest.approx((20 * 2 + 40 * 10) / 1_000_000)
+
+
+def test_steps_can_use_different_models(ai_ready, fake):
+    crm = ai_ready
+    two = {
+        **ASSESS,
+        "steps": [
+            ASSESS["steps"][0],
+            {**ASSESS["steps"][1], "id": "quick", "model": "fast", "tools": [], "objects": []},
+            {**ASSESS["steps"][1], "id": "local", "model": "private", "tools": [], "objects": []},
+        ],
+    }
+    crm.workflows.save(two)
+    lead = crm.records.create("lead", {"family_name": "Doe"})
+    fake["completion"] = FakeCompletion(
+        [("submit_result", {"decision": "drop", "reason": "a"})],
+        [("submit_result", {"decision": "pursue", "reason": "b"})],
+    )
+    run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
+    run_worker(crm)
+    assert crm.workflows.get_run(run["run_id"])["status"] == "succeeded"
+    quick, local = fake["completion"].requests
+    assert quick["model"] == "openrouter/vendor/small" and quick["reasoning_effort"] == "low"
+    assert local["model"] == "openai/local-model" and "api_key" not in local
+    assert local["api_base"] == "https://llm.internal.example.com/v1"
 
 
 def test_invalid_result_is_sent_back_for_correction(ai_ready, fake):
     crm = ai_ready
     crm.workflows.save(ASSESS)
     lead = crm.records.create("lead", {"family_name": "Doe"})
-    fake["client"] = FakeClient(
-        [
-            reply(tool("submit_result", {"decision": "maybe", "reason": "x"})),
-            reply(tool("submit_result", {"decision": "drop", "reason": "Too small."})),
-        ]
+    fake["completion"] = FakeCompletion(
+        [("submit_result", {"decision": "maybe", "reason": "x"})],
+        [("submit_result", {"decision": "drop", "reason": "Too small."})],
     )
     run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
     run_worker(crm)
     assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
-    correction = fake["client"].requests[1]["messages"][-1]["content"][0]
-    assert correction["is_error"] and "maybe" in correction["content"]
+    correction = fake["completion"].requests[1]["messages"][-1]
+    assert correction["role"] == "tool" and "maybe" in correction["content"]
 
 
 def test_tools_are_limited_to_the_listed_objects(ai_ready, fake):
     crm = ai_ready
     crm.workflows.save(ASSESS)
     lead = crm.records.create("lead", {"family_name": "Doe"})
-    fake["client"] = FakeClient(
+    fake["completion"] = FakeCompletion(
         [
-            reply(
-                tool("query_records", {"query": {"object": "app_user"}}),
-                tool(
-                    "update_record",
-                    {"object": "lead", "record_id": lead["id"], "values": {"status": "qualified"}},
-                    "c2",
-                ),
+            ("query_records", {"query": {"object": "app_user"}}),
+            (
+                "update_record",
+                {"object": "lead", "record_id": lead["id"], "values": {"status": "qualified"}},
             ),
-            reply(tool("submit_result", {"decision": "drop", "reason": "n/a"})),
-        ]
+        ],
+        [("submit_result", {"decision": "drop", "reason": "n/a"})],
     )
     run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
     run_worker(crm)
-    results = fake["client"].requests[1]["messages"][-1]["content"]
-    codes = [json.loads(r["content"])["code"] for r in results]
+    tool_messages = fake["completion"].requests[1]["messages"][-2:]
+    codes = [json.loads(m["content"])["error"]["code"] for m in tool_messages]
     assert codes == ["AI_TOOL_OBJECT_NOT_ALLOWED", "AI_TOOL_NOT_ALLOWED"]
     assert crm.records.get("lead", lead["id"])["status"] == "new"
     assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
@@ -206,7 +266,7 @@ def test_writes_use_the_run_principal_and_ai_provenance(ai_ready, fake, boot):
     crm = ai_ready
     crm.workflows.save(
         {
-            "name": "ai-tag",
+            "name": "ai-status",
             "description": "Let AI set the status of a lead.",
             "inputs": {"lead_id": {"type": "string", "description": "The lead."}},
             "steps": [
@@ -223,41 +283,48 @@ def test_writes_use_the_run_principal_and_ai_provenance(ai_ready, fake, boot):
         }
     )
     lead = crm.records.create("lead", {"family_name": "Doe"})
-    fake["client"] = FakeClient(
+    fake["completion"] = FakeCompletion(
         [
-            reply(
-                tool(
-                    "update_record",
-                    {"object": "lead", "record_id": lead["id"], "values": {"status": "working"}},
-                )
-            ),
-            reply(tool("submit_result", {"done": True})),
-        ]
+            (
+                "update_record",
+                {"object": "lead", "record_id": lead["id"], "values": {"status": "working"}},
+            )
+        ],
+        [("submit_result", {"done": True})],
     )
     agent = crm.as_principal(agent_for(boot.admin_user_id))
-    run = agent.workflows.start("ai-tag", {"lead_id": lead["id"]})
+    run = agent.workflows.start("ai-status", {"lead_id": lead["id"]})
     run_worker(crm)
     assert crm.workflows.get_run(run["run_id"])["status"] == "succeeded"
     change = crm.records.history("lead", lead["id"])[-1]
     assert change["new_value"] == "working" and change["source"] == "workflow"
-    assert change["actor_type"] == "agent" and change["provenance"]["source_type"] == (
-        "agent_inference"
-    )
+    assert change["actor_type"] == "agent"
+    assert change["provenance"]["source_type"] == "agent_inference"
+
+
+def _litellm_error(name):
+    import litellm
+
+    cls = getattr(litellm.exceptions, name)
+    return cls(message="nope", model="m", llm_provider="openrouter")
 
 
 @pytest.mark.parametrize(
     ("script", "code"),
     [
-        ([reply(text("no"), stop="refusal")], "AI_REFUSED"),
-        ([reply(text("..."), stop="max_tokens")], "AI_OUTPUT_TRUNCATED"),
-        ([reply(text("thinking"), stop="end_turn")] * 6, "AI_TURN_LIMIT"),
+        ([{"finish": "content_filter"}], "AI_REFUSED"),
+        ([{"finish": "length"}], "AI_OUTPUT_TRUNCATED"),
+        (["thinking out loud"] * 6, "AI_TURN_LIMIT"),
+        (["auth"], "AI_REQUEST_FAILED"),
     ],
 )
 def test_ai_failures_fail_the_step(ai_ready, fake, script, code):
     crm = ai_ready
     crm.workflows.save(ASSESS)
     lead = crm.records.create("lead", {"family_name": "Doe"})
-    fake["client"] = FakeClient(script)
+    if script == ["auth"]:
+        script = [_litellm_error("AuthenticationError")]
+    fake["completion"] = FakeCompletion(*script)
     run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
     run_worker(crm)
     failed = crm.workflows.get_run(run["run_id"])
@@ -265,27 +332,70 @@ def test_ai_failures_fail_the_step(ai_ready, fake, script, code):
     assert failed["error"]["step"] == "assess"
 
 
-def test_monthly_budget_stops_ai_steps(ai_ready, fake):
+def test_monthly_limits_per_connection(ai_ready, fake):
     crm = ai_ready
-    AIService(crm).update({"monthly_token_limit": 10_000})
-    AIService(crm).record_usage(
-        None, "earlier", MODEL, SimpleNamespace(input_tokens=9_000, output_tokens=1_000)
+    service = AIService(crm)
+    service.update_connection("main", {"monthly_budget_usd": "0.000001"})
+    resolved = service.resolve("careful")
+    fake["completion"] = FakeCompletion(
+        [("submit_result", {"decision": "drop", "reason": "x"})],
+    )
+    service.record_usage(
+        resolved,
+        None,
+        "earlier",
+        fake["completion"](model="m", messages=[{"role": "user", "content": "x"}]),
     )
     crm.workflows.save(ASSESS)
     lead = crm.records.create("lead", {"family_name": "Doe"})
-    fake["client"] = FakeClient([])
+    fake["completion"] = FakeCompletion()
     run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
     run_worker(crm)
     assert crm.workflows.get_run(run["run_id"])["error"]["code"] == "AI_BUDGET_EXCEEDED"
-    assert fake["client"].requests == []
+    assert fake["completion"].requests == []
 
 
-def test_not_configured(crm, fake):
-    crm.workflows.save(ASSESS)
-    lead = crm.records.create("lead", {"family_name": "Doe"})
-    run = crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
-    run_worker(crm)
-    assert crm.workflows.get_run(run["run_id"])["error"]["code"] == "AI_NOT_CONFIGURED"
+def test_saving_needs_an_existing_profile(crm):
+    with pytest.raises(OsierError) as err:
+        crm.workflows.preview(ASSESS)
+    assert err.value.code == "AI_NOT_CONFIGURED"
+
+
+def test_unknown_profile_is_refused(ai_ready):
+    bad = {**ASSESS, "steps": [ASSESS["steps"][0], {**ASSESS["steps"][1], "model": "nope"}]}
+    with pytest.raises(OsierError) as err:
+        ai_ready.workflows.preview(bad)
+    assert err.value.code == "AI_PROFILE_NOT_FOUND"
+
+
+def test_profiles_only_use_models_the_connection_allows(ai_ready):
+    with pytest.raises(OsierError) as err:
+        AIService(ai_ready).set_profile(name="x", connection="main", model="vendor/other")
+    assert err.value.code == "AI_MODEL_NOT_ALLOWED"
+
+
+def test_unknown_provider_and_plain_http_are_refused(crm, broker):
+    service = AIService(crm, broker)
+    with pytest.raises(OsierError) as err:
+        service.connect("x", provider="made-up", models=["m"], api_key="k")
+    assert err.value.code == "AI_PROVIDER_UNKNOWN"
+    with pytest.raises(OsierError, match="https"):
+        service.connect(
+            "x", provider="openai", models=["m"], api_key="k", api_base="http://example.com/v1"
+        )
+
+
+def test_private_network_api_base_is_refused(crm, broker):
+    with pytest.raises(OsierError):
+        AIService(crm, broker).connect(
+            "x", provider="openai", models=["m"], api_key="k", api_base="https://127.0.0.1/v1"
+        )
+
+
+def test_connections_in_use_cannot_be_removed(ai_ready):
+    with pytest.raises(OsierError) as err:
+        AIService(ai_ready).disconnect("main")
+    assert err.value.code == "AI_CONNECTION_IN_USE"
 
 
 def test_skill_text_is_given_to_the_model(ai_ready, fake):
@@ -303,37 +413,39 @@ def test_skill_text_is_given_to_the_model(ai_ready, fake):
         }
     )
     lead = crm.records.create("lead", {"family_name": "Doe"})
-    fake["client"] = FakeClient(
-        [reply(tool("submit_result", {"decision": "drop", "reason": "No company."}))]
+    fake["completion"] = FakeCompletion(
+        [("submit_result", {"decision": "drop", "reason": "No company."})]
     )
     crm.workflows.start("assess-lead", {"lead_id": lead["id"]})
     run_worker(crm)
-    assert "Drop leads without a company." in fake["client"].requests[0]["messages"][0]["content"]
+    assert (
+        "Drop leads without a company." in fake["completion"].requests[0]["messages"][1]["content"]
+    )
 
 
 def test_ai_settings_need_ai_manage_and_a_person(crm, broker, make_user, boot):
     developer = crm.as_principal(make_user("dev@example.com", "developer"))
     with pytest.raises(OsierError) as err:
-        AIService(developer, broker).update({"model": MODEL}, api_key="k")
+        AIService(developer, broker).connect("x", provider="openai", models=["m"], api_key="k")
     assert err.value.code == "MISSING_PERMISSION"
     agent = crm.as_principal(agent_for(boot.admin_user_id))
     with pytest.raises(OsierError) as err:
-        AIService(agent, broker).update({"model": MODEL}, api_key="k")
+        AIService(agent, broker).connect("x", provider="openai", models=["m"], api_key="k")
     assert err.value.code == "APPROVAL_REQUIRES_HUMAN"
-    with pytest.raises(OsierError) as err:
-        AIService(crm, broker).update({"monthly_token_limit": 5})
-    assert err.value.code == "AI_SETTINGS_INVALID"
 
 
-def test_the_key_is_stored_encrypted(ai_ready, conn):
+def test_keys_are_stored_encrypted_and_never_shown(ai_ready, conn):
     from psycopg import sql
 
-    row = conn.execute(
+    rows = conn.execute(
         sql.SQL("SELECT secret_ciphertext, settings::text FROM {}").format(
-            sql.Identifier(ai_ready.tenant.schema, "meta_ai_settings")
+            sql.Identifier(ai_ready.tenant.schema, "ai_connections")
         )
-    ).fetchone()
-    assert b"sk-test-secret" not in bytes(row[0]) and "sk-test" not in row[1]
+    ).fetchall()
+    for ciphertext, settings in rows:
+        assert ciphertext is None or b"sk-test-secret" not in bytes(ciphertext)
+        assert "sk-test" not in settings
+    assert "sk-test" not in json.dumps(AIService(ai_ready).status(), default=str)
 
 
 @pytest.mark.parametrize(
@@ -348,12 +460,13 @@ def test_the_key_is_stored_encrypted(ai_ready, conn):
         ({"max_turns": 50}, "not valid"),
     ],
 )
-def test_invalid_ai_steps(crm, change, message):
+def test_invalid_ai_steps(ai_ready, change, message):
     step = {**ASSESS["steps"][1], **change}
     with pytest.raises(OsierError, match=message):
-        crm.workflows.preview({**ASSESS, "steps": [ASSESS["steps"][0], step]})
+        ai_ready.workflows.preview({**ASSESS, "steps": [ASSESS["steps"][0], step]})
 
 
-def test_preview_says_it_uses_ai_tokens(crm):
-    preview = crm.workflows.preview(ASSESS)
-    assert any("AI step" in line and "AI tokens" in line for line in preview["steps"])
+def test_preview_says_which_model_profile(ai_ready):
+    preview = ai_ready.workflows.preview(ASSESS)
+    line = next(x for x in preview["steps"] if "AI step" in x)
+    assert "default model profile" in line and "AI tokens" in line
