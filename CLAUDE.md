@@ -21,6 +21,7 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/changesets.py` — schema change sets: propose / validate / impact / apply
 - `src/osier/records.py` — record create / read / update / retire, history, provenance
 - `src/osier/db.py` — `TenantConnection`: the central check every statement passes through
+- `src/osier/authz.py` — roles and permissions (`MISSING_PERMISSION`)
 - `src/osier/session.py` — tenant + principal scoped entry point
 - `src/osier/design.py` — design rules: required documentation, naming quality, ontology refs
 - `src/osier/packages/` — installable standard-object packages (core, crm, case_management)
@@ -29,7 +30,7 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/query.py` — structured record queries (the only way agents read many records)
 - `src/osier/connectors/` — connector framework, SMTP and dev outbox, credential broker,
   routing, approvals, audit (`service.py`), MCP servers as connectors (`mcp_service.py`,
-  `mcp_remote.py`)
+  `mcp_remote.py`), OAuth sign-in (`oauth.py`, `oauth_service.py`, `oauth_callback.py`)
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
@@ -76,3 +77,8 @@ uv run ruff check . && uv run ruff format --check .
     descriptions or results from connected servers; keep them pinned and reviewed,
     and never enable local server processes (`allow_local_processes`) outside local
     development.
+15. **Check permissions in the engine**, with `Authorizer.require(...)`, never only in
+    a client. New sensitive operations get a permission and a test with a member.
+16. **Confirmation resolvers must be side-effect free.** MCP tools that ask the person
+    to confirm compute a deterministic preview in the resolver (it may run more than
+    once) and act only in the tool body, after an approved answer, as the person.

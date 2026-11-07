@@ -24,8 +24,9 @@ sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
 
 
 class FakeProvider:
-    def __init__(self, *, registration=True):
+    def __init__(self, *, registration=True, redirect=REDIRECT):
         self.registration = registration
+        self.redirect = redirect
         self.challenges: dict[str, str] = {}
         self.token_requests: list[dict] = []
         self.issued = 0
@@ -57,7 +58,7 @@ class FakeProvider:
             return httpx2.Response(200, json=meta)
         if url == "https://auth.notion.test/register":
             body = json.loads(request.content)
-            assert body["redirect_uris"] == [REDIRECT]
+            assert body["redirect_uris"] == [self.redirect]
             assert body["token_endpoint_auth_method"] == "none"
             return httpx2.Response(201, json={"client_id": "dcr-client-1"})
         if url == "https://auth.notion.test/token":
@@ -91,7 +92,7 @@ class FakeProvider:
         """What the person's browser does: sign in, approve, get redirected with a code."""
         params = {k: v[0] for k, v in parse_qs(urlparse(authorization_url).query).items()}
         assert params["code_challenge_method"] == "S256"
-        assert params["resource"] == MCP_URL and params["redirect_uri"] == REDIRECT
+        assert params["resource"] == MCP_URL and params["redirect_uri"] == self.redirect
         code = f"code-{len(self.challenges)}"
         self.challenges[code] = params["code_challenge"]
         return params["state"], code

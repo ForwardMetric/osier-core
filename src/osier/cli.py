@@ -118,7 +118,40 @@ def cmd_status(args: argparse.Namespace) -> None:
 def cmd_mcp(args: argparse.Namespace) -> None:
     from .mcp_server import run
 
-    run(DevConfig.load())
+    config = DevConfig.load()
+    run(config, config.find_person(args.as_user) if args.as_user else None)
+
+
+def cmd_dev_add_user(args: argparse.Namespace) -> None:
+    """Add a person with roles (for testing permissions locally)."""
+    config = DevConfig.load()
+    session = _admin(config)
+    user = session.records.create(
+        "app_user",
+        {
+            "display_name": args.name,
+            "email": args.email,
+            "status": "active",
+            "organization": config.organization_id,
+        },
+    )
+    for key in args.role or []:
+        matches = session.records.list("role", where={"key": key}, limit=1)
+        if not matches:
+            raise OsierError(f"No role {key!r}.", code="ROLE_NOT_FOUND")
+        session.records.create("user_role", {"app_user": user["id"], "role": matches[0]["id"]})
+    print(f"Added {args.name} <{args.email}> with roles: {', '.join(args.role or []) or 'none'}")
+    print("Run Claude's osier server as this person with:")
+    print(f"  osier mcp --as {args.email}")
+
+
+def cmd_connect_finish(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    svc = _connectors(config)
+    review = svc.review_mcp_oauth(args.oauth_id)
+    _print_tools(review["tools"], "default_policy")
+    if _confirm("Connect with these tools and policies?", args.yes):
+        _print(svc.finish_mcp_oauth(args.oauth_id, expected_tools_hash=review["tools_hash"]))
 
 
 def cmd_client_setup(args: argparse.Namespace) -> None:
@@ -474,11 +507,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_dev_init)
+    add_user = dev.add_parser("add-user", help="add a person with roles (local testing)")
+    add_user.add_argument("--email", required=True)
+    add_user.add_argument("--name", required=True)
+    add_user.add_argument("--role", action="append", help="role key, e.g. developer, member")
+    add_user.set_defaults(func=cmd_dev_add_user)
 
     sub.add_parser("status", help="show tenant, packages, and pending approvals").set_defaults(
         func=cmd_status
     )
-    sub.add_parser("mcp", help="run the MCP server (stdio)").set_defaults(func=cmd_mcp)
+    mcp_cmd = sub.add_parser("mcp", help="run the MCP server (stdio)")
+    mcp_cmd.add_argument(
+        "--as",
+        dest="as_user",
+        metavar="EMAIL",
+        help="act for this person (default: the administrator)",
+    )
+    mcp_cmd.set_defaults(func=cmd_mcp)
     sub.add_parser("client-setup", help="print Claude Desktop / Claude Code setup").set_defaults(
         func=cmd_client_setup
     )
@@ -523,6 +568,10 @@ def build_parser() -> argparse.ArgumentParser:
     outbox.add_argument("--default", action="store_true")
     outbox.add_argument("--auto-approve", action="store_true")
     outbox.set_defaults(func=cmd_connect_outbox)
+    finish_p = connect.add_parser("finish", help="finish an app sign-in started in chat")
+    finish_p.add_argument("oauth_id")
+    finish_p.add_argument("-y", "--yes", action="store_true")
+    finish_p.set_defaults(func=cmd_connect_finish)
     mcp_p = connect.add_parser("mcp", help="connect an app through its MCP server")
     mcp_p.add_argument("--name", required=True, help="e.g. Notion")
     mcp_p.add_argument(

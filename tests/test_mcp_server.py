@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from mcp.client import Client
@@ -10,6 +11,8 @@ from mcp.client import Client
 from osier.connectors import ConnectorService
 from osier.devconfig import DevConfig, write_key_file
 from osier.mcp_server import build_server
+
+prompts: list[str] = []
 
 
 @pytest.fixture
@@ -27,22 +30,47 @@ def config(boot, crm, tmp_path):
     )
 
 
+class Sessions:
+    def __init__(self, config, conn, person_id=None):
+        self.config, self.conn = config, conn
+        self.person_id = person_id or uuid.UUID(config.admin_user_id)
+
+    def agent(self):
+        return self.config.session(self.config.agent(self.person_id), self.conn)
+
+    def person(self):
+        return self.config.session(
+            self.config.person(self.person_id, "chat-confirmation"), self.conn
+        )
+
+
 @pytest.fixture
 def server(config, conn):
-    class Sessions:
-        def agent(self):
-            return config.session(config.agent(), conn)
-
-    return build_server(config, sessions=Sessions())
+    return build_server(config, sessions=Sessions(config, conn))
 
 
-def call(server, tool_name, /, **arguments):
+def call(server, tool_name, /, _answer=None, **arguments):
+    """Call a tool. _answer simulates the person answering the app's confirmation prompt:
+    None = the app cannot show prompts; "accept" / "decline" = the person's click."""
+    import mcp.types as mt
+
+    prompts.clear()
+
+    async def answer(context, params):
+        prompts.append(params.message)
+        if _answer == "accept":
+            return mt.ElicitResult(action="accept", content={"approve": True})
+        return mt.ElicitResult(action="decline")
+
     async def go():
-        async with Client(server) as client:
+        kwargs = {"elicitation_callback": answer} if _answer else {}
+        async with Client(server, **kwargs) as client:
             result = await client.call_tool(tool_name, arguments)
             text = result.content[0].text
             if result.is_error:
-                return {"error": json.loads(text[text.index("{") :])}
+                if "{" in text:
+                    return {"error": json.loads(text[text.index("{") :])}
+                return {"error": {"message": text}}
             return json.loads(text)
 
     return asyncio.run(go())
@@ -228,3 +256,167 @@ def test_connector_tools_through_the_mcp_server(server, config, conn):
         arguments={"title": "x", "body": "y"},
     )
     assert pending["status"] == "awaiting_approval"
+
+
+# --- confirmations in the chat ------------------------------------------------------------
+
+BUDGET = [
+    {
+        "op": "add_field",
+        "object": "lead",
+        "field": {
+            "api_name": "c__budget",
+            "label": "Budget",
+            "type": "decimal",
+            "description": "Budget the lead says they have for this purchase.",
+        },
+    }
+]
+
+
+def lead_fields(server):
+    return {f["api_name"] for f in call(server, "describe_schema", object="lead")["fields"]}
+
+
+def test_schema_change_confirmed_in_chat_is_applied(server):
+    result = call(server, "propose_schema_change", _answer="accept", operations=BUDGET)
+    assert result["status"] == "applied" and result["confirmed_by_user"] is True
+    assert "c__budget" in prompts[0] and "ADD COLUMN" in prompts[0]
+    assert "c__budget" in lead_fields(server)
+
+
+def test_declined_schema_change_changes_nothing(server):
+    result = call(server, "propose_schema_change", _answer="decline", operations=BUDGET)
+    assert "error" in result and "decline" in json.dumps(result)
+    assert "c__budget" not in lead_fields(server)
+    assert call(server, "list_pending_approvals")["count"] == 0
+
+
+def test_without_prompts_the_change_waits_and_can_be_approved_later(server):
+    waiting = call(server, "propose_schema_change", operations=BUDGET)
+    assert waiting["status"] == "proposed" and "approve_pending" in waiting["next_step"]
+    pending = call(server, "list_pending_approvals")
+    assert pending["count"] == 1
+    approved = call(server, "approve_pending", _answer="accept", item_id=waiting["change_set_id"])
+    assert approved["status"] == "applied"
+    assert "c__budget" in lead_fields(server)
+
+
+def test_approve_pending_needs_a_prompt(server):
+    waiting = call(server, "propose_schema_change", operations=BUDGET)
+    result = call(server, "approve_pending", item_id=waiting["change_set_id"])
+    assert result["error"]["code"] == "CONFIRMATION_UNAVAILABLE"
+
+
+def test_sales_person_is_told_which_role_they_need(config, conn, make_user):
+    sam = make_user("sam@acme.test", "member")
+    server = build_server(config, sessions=Sessions(config, conn, sam.user_id))
+    result = call(server, "propose_schema_change", _answer="accept", operations=BUDGET)
+    assert result["error"]["code"] == "MISSING_PERMISSION"
+    assert "Developer" in result["error"]["message"]
+    assert prompts == []  # no prompt is shown for something they may not do
+    me = call(server, "whoami")
+    assert me["roles"] == ["member"] and "schema.manage" not in me["permissions"]
+
+
+def test_install_packages_with_confirmation(server):
+    result = call(server, "install_packages", _answer="accept", packages=["case_management"])
+    assert result["status"] == "applied"
+    assert "Install package 'case_management'" in prompts[0]
+
+
+def test_email_confirmed_in_chat_is_sent(server, config, conn):
+    admin = config.session(config.admin(), conn)
+    ConnectorService(admin, config.broker()).create_connection("dev_outbox", "Outbox")
+    sent = call(
+        server,
+        "send_email",
+        _answer="accept",
+        to=["jane@example.com"],
+        subject="Hello",
+        body_text="Thanks for reaching out.",
+    )
+    assert sent["status"] == "succeeded" and sent["confirmed_by_user"] is True
+    assert "Thanks for reaching out." in prompts[0]
+    declined = call(
+        server,
+        "send_email",
+        _answer="decline",
+        to=["jane@example.com"],
+        subject="Hello",
+        body_text="Second message.",
+    )
+    assert "error" in declined
+    assert call(server, "list_pending_approvals")["count"] == 0  # nothing queued or sent
+
+
+def test_auto_approved_connections_do_not_prompt(server, config, conn):
+    admin = config.session(config.admin(), conn)
+    ConnectorService(admin, config.broker()).create_connection(
+        "dev_outbox", "Outbox", approval="not_required"
+    )
+    sent = call(
+        server,
+        "send_email",
+        _answer="accept",
+        to=["jane@example.com"],
+        subject="Hello",
+        body_text="Thanks.",
+    )
+    assert sent["status"] == "succeeded" and prompts == []
+
+
+def test_connect_app_in_chat_with_oauth(config, conn, monkeypatch):
+    import httpx2
+
+    sys_path = str(Path(__file__).parent / "fixtures")
+    import sys
+
+    sys.path.insert(0, sys_path)
+    from notes_mcp_server import server as notes  # type: ignore[import-not-found]
+    from test_oauth_connect import MCP_URL, FakeProvider
+
+    from osier.connectors.oauth_callback import redirect_uri
+
+    config.oauth_callback_port = _free_port()
+    provider = FakeProvider(redirect=redirect_uri(config.oauth_callback_port))
+    server = build_server(
+        config,
+        sessions=Sessions(config, conn),
+        connector_options={
+            "mcp_client_factory": lambda: Client(notes),
+            "oauth_http_client": httpx2.Client(transport=httpx2.MockTransport(provider.handle)),
+        },
+    )
+    started = call(
+        server,
+        "connect_app",
+        name="Notion",
+        url=MCP_URL,
+        description="Company wiki and meeting notes in Notion.",
+    )
+    assert started["sign_in_url"].startswith("https://auth.notion.test/authorize")
+    early = call(server, "finish_app_connection", _answer="accept", oauth_id=started["oauth_id"])
+    assert early["status"] == "pending"
+
+    # the person signs in; the provider redirects to osier's callback
+    state, code = provider.authorize(started["sign_in_url"])
+    admin = config.session(config.admin(), conn)
+    ConnectorService(
+        admin,
+        config.broker(),
+        oauth_http_client=httpx2.Client(transport=httpx2.MockTransport(provider.handle)),
+    ).complete_mcp_oauth(state, code=code)
+
+    done = call(server, "finish_app_connection", _answer="accept", oauth_id=started["oauth_id"])
+    assert done["status"] == "active" and done["confirmed_by_user"] is True
+    assert "search_notes (auto)" in prompts[0]
+    assert call(server, "list_connections")["connections"][0]["name"] == "Notion"
+
+
+def _free_port():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]

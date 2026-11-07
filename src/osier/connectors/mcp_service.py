@@ -55,6 +55,7 @@ class McpConnectorsMixin:
     _mcp_client_factory: Any
     _authz: Any
     _refresh_if_needed: Any
+    _insert_call: Any
 
     # ---- helpers ---------------------------------------------------------------------
 
@@ -395,12 +396,47 @@ class McpConnectorsMixin:
             existing = self._call_by_key(idempotency_key)
             if existing is not None:
                 return self._call_view(existing)
+        connection, ctype, summary, policy = self._prepare_tool_call(
+            connection_name, tool, arguments
+        )
+        return self._insert_call(
+            connection,
+            ctype["key"],
+            tool,
+            None,
+            arguments,
+            summary,
+            None,
+            policy == "approval",
+            idempotency_key,
+            request_id,
+            purpose="general",
+        )
+
+    def preview_tool_call(
+        self, connection_name: str, tool: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Validate a tool call and say whether it needs approval, without doing anything."""
+        self._authz.require("actions.request", "having agents use connected apps")
+        connection, _ctype, summary, policy = self._prepare_tool_call(
+            connection_name, tool, arguments
+        )
+        return {
+            "connection": connection["name"],
+            "summary": summary,
+            "needs_approval": policy == "approval",
+            "arguments": arguments,
+        }
+
+    def _prepare_tool_call(
+        self, connection_name: str, tool: str, arguments: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
         connection, ctype = self._mcp_connection(connection_name)
         if ctype["status"] != "active":
             raise ApprovalError(
                 f"{connection_name!r} needs review: its tools changed.",
                 code="CONNECTOR_NEEDS_REVIEW",
-                hint="Ask the user to run 'osier connections review'.",
+                hint="Ask someone who manages connections to review it.",
             )
         pinned = next((t for t in ctype["tools"] if t["name"] == tool), None)
         policy = self._tool_policies(connection["id"]).get(tool, "approval")
@@ -413,37 +449,8 @@ class McpConnectorsMixin:
         if not isinstance(arguments, dict):
             raise RecordValidationError("arguments must be an object.", field="arguments")
         self._validate_arguments(pinned["input_schema"], arguments)
-
-        call_id = uuid.uuid4()
-        p = self._principal
         summary = f"{tool} on {connection_name}: " + json.dumps(arguments, default=str)[:300]
-        self._conn.execute(
-            sql.SQL(
-                "INSERT INTO {} (id, connection_id, connector_type, action, capability, purpose, "
-                "status, summary, arguments, actor_id, actor_type, on_behalf_of, agent_id, "
-                "source, request_id, idempotency_key) VALUES (%s, %s, %s, %s, NULL, 'general', "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-            ).format(self._t("connector_calls")),
-            (
-                call_id,
-                connection["id"],
-                ctype["key"],
-                tool,
-                "awaiting_approval" if policy == "approval" else "running",
-                summary,
-                Jsonb(arguments),
-                p.user_id,
-                p.actor_type.value,
-                p.on_behalf_of,
-                p.agent_id,
-                p.source,
-                request_id,
-                idempotency_key,
-            ),
-        )
-        if policy == "auto":
-            self._execute(call_id)
-        return self._call_view(self._get_call(call_id))
+        return connection, ctype, summary, policy
 
     @staticmethod
     def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> None:

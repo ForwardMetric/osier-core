@@ -91,10 +91,13 @@ Claude Desktop: add the block printed by `uv run osier client-setup` to
 
 > Add a Budget field to leads.
 
-**5. Approve what the agent proposes**
+**5. Confirm sensitive actions in the chat**
 
-Agents read and write records directly, but schema changes, package installs,
-and emails wait for you:
+Agents read and write records directly. Schema changes, package installs,
+emails, app actions, and connecting apps ask **you** to confirm in a prompt shown
+by your Claude app; nothing happens if you decline. If your app cannot show these
+prompts, the action waits: approve it later in chat (`approve_pending`) or in the
+terminal:
 
 ```bash
 uv run osier approvals list
@@ -104,8 +107,33 @@ uv run osier approvals list
 uv run osier approvals approve <id>
 ```
 
-Also: `osier status`, `osier connections list`, `osier outbox -v` (sent and
-captured emails), `osier approvals show <id>`, `osier approvals reject <id>`.
+**6. Roles: who may do what**
+
+Developers and administrators can change objects, fields, packages, and
+connections; members work with records and have agents send email and use apps.
+Anyone else asking for a schema change is told which role they need. To try it
+locally, add a person and run Claude's osier server as them:
+
+```bash
+uv run osier dev add-user --email sam@example.com --name "Sam Sales" --role member
+```
+
+```bash
+claude mcp add osier-sam --env OSIER_CONFIG=$HOME/.config/osier/dev.json -- $(pwd)/.venv/bin/osier mcp --as sam@example.com
+```
+
+**7. Connect apps with OAuth (e.g. Notion)**
+
+Ask Claude: *"Connect our Notion workspace for the whole team"*. Claude starts
+the sign-in and gives you a link (`connect_app`); you sign in at Notion, then
+confirm the tools Notion offers. Or from the terminal:
+
+```bash
+uv run osier connect mcp --oauth --name "Notion" --description "Company wiki and meeting notes." --url https://mcp.notion.com/mcp
+```
+
+Share a connection with specific roles with `--visibility roles --role <role>`,
+or later with `osier connections share`.
 
 ## MCP tools
 
@@ -115,10 +143,12 @@ captured emails), `osier approvals show <id>`, `osier approvals reject <id>`.
 | `query_records` | Filters (`eq`, `ne`, `gt`…, `in`, `contains`, `starts_with`, `is_null`), sorting, paging, lookup expansion |
 | `get_record`, `create_record`, `update_record`, `retire_record` | Record operations with validation and structured errors |
 | `get_record_history` | Field history: old/new values, person or agent, provenance |
-| `propose_schema_change`, `get_change_set` | Propose new objects or fields; you approve |
-| `list_packages`, `propose_install_packages` | Standard-object packages; you approve |
+| `propose_schema_change`, `get_change_set` | New objects or fields; you confirm (Developer role) |
+| `list_packages`, `install_packages` | Standard-object packages; you confirm |
 | `list_connections`, `send_email`, `get_connector_call` | Email through your connections; sends wait for approval and are logged as activities |
 | `list_connector_tools`, `call_connector_tool` | Use connected apps' MCP tools: pinned definitions, per-tool approval policy, untrusted results |
+| `connect_app`, `finish_app_connection`, `share_connection` | Connect apps with OAuth sign-in and decide who may use them |
+| `whoami`, `list_pending_approvals`, `approve_pending` | Your roles and permissions; review and confirm waiting items |
 
 ## What is implemented
 
@@ -137,9 +167,9 @@ captured emails), `osier approvals show <id>`, `osier approvals reject <id>`.
   capability + purpose routing; approval queue; audit; automatic CRM logging.
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
-Not yet (see the roadmap in ARCHITECTURE.md): remote MCP over HTTPS with OAuth
-(claude.ai connectors), role permissions, in-chat approval screens, views,
-marketing email, OAuth sign-in to MCP servers, multi-database placement, reporting, jobs and workflows.
+Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone
+signing in to osier), object- and field-level permissions, views, marketing email,
+multi-database placement, reporting, jobs and workflows.
 
 ## Using the engine from Python
 

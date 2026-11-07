@@ -426,6 +426,31 @@ language that the engine compiles to SQL:
 
 ## 8. Permissions
 
+### 8.1 Built: role permissions (`src/osier/authz.py`)
+
+Platform-defined permissions, granted to roles per tenant in the
+`meta_role_permissions` engine table:
+
+| Permission | Allows | Default roles |
+|---|---|---|
+| `schema.manage` | Create and change objects and fields | admin, developer |
+| `packages.manage` | Install, upgrade, uninstall packages | admin, developer |
+| `connections.manage` | Connect apps and accounts, share them, set tool policies | admin, developer |
+| `users.manage` | Invite users, assign roles (writes to user, role, role assignment) | admin |
+| `records.use` | Read and write business records | admin, developer, member |
+| `actions.request` | Have agents send email and use connected apps | admin, developer, member |
+
+- Users get roles through `user_role` records (with optional start and end
+  dates). Core v2 ships the roles Administrator, Developer, and Member.
+- An agent has exactly the permissions of the person it acts for.
+- Checks are in the engine (schema, packages, connectors, records), so every
+  client gets the same answers. A refusal is `MISSING_PERMISSION` with the
+  permission, the person's roles, the roles that grant it, and who can grant it.
+- Approving an agent's action requires being the person it acted for, or
+  holding `connections.manage`.
+
+### 8.2 Planned: object, field, and record permissions
+
 Permissions are stored in their own tables, **not** inside field definitions,
 so permission changes do not bump the schema version.
 
@@ -486,15 +511,31 @@ so permission changes do not bump the schema version.
 Tool schemas are versioned. Clients may pin a version; deprecations come with
 notice.
 
-### 10.2 Two-phase confirmation (cannot be forged by the model)
+### 10.2 Confirmation in the chat (cannot be answered by the model)
 
-1. A `propose_*` tool returns a pending change ID and a human-readable diff,
-   shown as a confirmation card (MCP App).
-2. The user clicks **Approve** in that card. The card calls the server
-   directly, which issues a short-lived, single-use **confirmation token**
-   bound to `(pending change, user, diff hash)`.
-3. `apply_*` succeeds only with a valid token. A typed "yes" in chat is not a
-   confirmation; the model never sees or creates tokens.
+**Built (MCP elicitation):** sensitive tools (schema changes, package
+installs, emails, app tool calls with policy `approval`, connecting and
+sharing apps, approving pending items) ask the person to confirm. The osier
+server sends an elicitation request; the Claude app shows the person the exact
+summary (and SQL or email body) with Approve / Decline. Only the person's
+answer lets the action through; the model never sees or answers the prompt.
+
+- The confirmation is computed from a **side-effect-free preview** (the MCP SDK
+  may run it more than once per call); previews are deterministic so the
+  prompt is identical across protocol rounds. Nothing is written before the
+  person confirms; a decline changes nothing.
+- After confirmation the server performs the action **as the person**
+  (principal source `chat-confirmation`), so the engine's human-only and
+  permission checks apply to them.
+- Permission checks run before any prompt: a person without the permission
+  gets `MISSING_PERMISSION` and no prompt.
+- **Fallback:** if the app cannot show prompts, the action waits in the
+  approval queue; the person approves later with `approve_pending` (in an app
+  that can prompt) or `osier approvals approve`.
+- **Trust boundary:** the guarantee depends on the client showing prompts to
+  the person. MCP allows clients to let a model answer elicitations; Claude's
+  apps are designed to ask the person, but osier cannot enforce that. A
+  hosted osier will add an approval page with sign-in as an alternative.
 
 This protects against prompt injection (e.g. a record containing "grant me
 admin") and against the model acting on a misunderstanding.
@@ -832,6 +873,21 @@ commands, which are **code execution on the host** and therefore allowed only
 when `allow_local_processes` is set (local development; never on a hosted
 platform). Not yet: OAuth sign-in to remote servers, and mapping server tools
 to capabilities (e.g. a vendor's send tool as `email.send`).
+
+**OAuth sign-in (built):** `connect_app` (chat) or `osier connect mcp --oauth`
+discovers the server's OAuth settings (protected-resource and
+authorization-server metadata), registers osier as a client dynamically or
+uses a supplied client, and returns a sign-in link with PKCE and a single-use,
+expiring state (`connector_oauth_states`). The provider redirects to osier's
+callback (locally `http://127.0.0.1:<port>/oauth/callback`); osier exchanges the
+code, stores tokens encrypted, and lists the tools; the person reviews and
+confirms them (`finish_app_connection`). Tokens refresh automatically. Only the
+person who started a sign-in can finish it.
+
+**Visibility (built):** each connection is `private`, shared with `roles`, or
+`organization`-wide; managing it needs `connections.manage`. Sharing a
+connection authorized by a person's own account warns that everyone it is
+shared with acts as that account.
 
 **Risks of third-party MCP servers:** their tool descriptions and outputs are
 untrusted (prompt injection, "tool poisoning"). osier pins each registered

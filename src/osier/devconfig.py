@@ -48,14 +48,33 @@ class DevConfig:
     def admin(self, source: str = "cli") -> Principal:
         return Principal(user_id=uuid.UUID(self.admin_user_id), source=source)
 
-    def agent(self, agent_id: str = "mcp") -> Principal:
+    def person(self, user_id: uuid.UUID, source: str = "cli") -> Principal:
+        return Principal(user_id=user_id, source=source)
+
+    def agent(self, person_id: uuid.UUID | None = None, agent_id: str = "mcp") -> Principal:
+        """The MCP agent acting for a person (the administrator by default)."""
         return Principal(
             user_id=uuid.UUID(self.agent_user_id),
             actor_type=ActorType.AGENT,
-            on_behalf_of=uuid.UUID(self.admin_user_id),
+            on_behalf_of=person_id or uuid.UUID(self.admin_user_id),
             agent_id=agent_id,
             source="chat",
         )
+
+    def find_person(self, email: str) -> uuid.UUID:
+        from .errors import NotFoundError
+
+        with self.connect() as conn:
+            matches = self.session(Principal.system("cli"), conn).records.list(
+                "app_user", where={"email": email}, limit=1
+            )
+        if not matches:
+            raise NotFoundError(
+                f"No user with email {email}.",
+                code="USER_NOT_FOUND",
+                hint="Add them with 'osier dev add-user'.",
+            )
+        return uuid.UUID(matches[0]["id"])
 
     def connect(self) -> psycopg.Connection:
         return psycopg.connect(self.database_url, autocommit=True)

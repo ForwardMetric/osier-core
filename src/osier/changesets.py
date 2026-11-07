@@ -1144,17 +1144,42 @@ class SchemaService:
         elif source == "package":
             self._authz.require("packages.manage", "installing or changing packages")
 
+    def preview(self, operations: Any, *, source: str = "tenant") -> dict[str, Any]:
+        """Validate and analyse a change set without storing anything (for confirmations).
+
+        Same checks and output as ``propose``; nothing is written."""
+        self._check_source(source)
+        ops = parse_operations(operations)
+        snapshot = self._registry.snapshot()
+        # Deterministic id: the same request previews identically (confirmation prompts
+        # are compared across protocol rounds), and generated names match on re-preview.
+        op_dicts = [op.model_dump(mode="json", exclude_unset=True) for op in ops]
+        preview_id = uuid.uuid5(
+            uuid.NAMESPACE_URL, _diff_hash(uuid.UUID(int=0), snapshot.version, op_dicts)
+        )
+        plan = _plan(self._conn, snapshot, preview_id, source, ops)
+        return {
+            "summary": plan.summary,
+            "ddl": [self._conn.render(s) for s in plan.ddl],
+            "impact": plan.impact,
+            "blockers": plan.blockers,
+            "base_schema_version": snapshot.version,
+        }
+
+    def _check_source(self, source: str) -> None:
+        if source not in ("tenant", "platform", "upgrade", "package"):
+            raise SchemaChangeError(f"Invalid source {source!r}.")
+        if source in ("platform", "upgrade") and self._principal.actor_type is not ActorType.SYSTEM:
+            raise ApprovalError("Only the platform may propose platform or upgrade changes.")
+        self._require_permission(source)
+
     def propose(self, operations: Any, *, source: str = "tenant") -> Proposal:
         """Validate a change set, analyse its impact, and store it as a proposal.
 
         Raises ``SchemaChangeError`` for invalid requests. Data-dependent problems
         (e.g. existing records missing a value) are returned as ``blockers``.
         """
-        if source not in ("tenant", "platform", "upgrade", "package"):
-            raise SchemaChangeError(f"Invalid source {source!r}.")
-        if source in ("platform", "upgrade") and self._principal.actor_type is not ActorType.SYSTEM:
-            raise ApprovalError("Only the platform may propose platform or upgrade changes.")
-        self._require_permission(source)
+        self._check_source(source)
         ops = parse_operations(operations)
         op_dicts = [op.model_dump(mode="json", exclude_unset=True) for op in ops]
         change_set_id = uuid.uuid4()

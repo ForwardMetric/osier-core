@@ -343,6 +343,17 @@ class PackageService:
                 results.append(platform.apply(proposal.id, diff_hash=proposal.diff_hash))
         return results
 
+    def preview_install(self, names: list[str]) -> dict[str, Any]:
+        """What installing would do, without storing anything (for confirmations)."""
+        installed = {n for n, s in self.states().items() if s == "installed"}
+        order = _resolve(list(names), installed)
+        if not order:
+            raise SchemaChangeError(
+                f"{sorted(names)} already installed.", code="PACKAGE_ALREADY_INSTALLED"
+            )
+        operations = [op for p in order for op in p.install_operations()]
+        return self._session.schema.preview(operations, source="package")
+
     def propose_uninstall(self, name: str) -> Proposal:
         return self._session.schema.propose(
             get_package(name).uninstall_operations(), source="package"

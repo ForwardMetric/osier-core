@@ -432,7 +432,40 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
             existing = self._call_by_key(idempotency_key)
             if existing is not None:
                 return self._call_view(existing)
+        target, connector, action, args, recipients, summary, needs_approval = self._prepare_call(
+            capability, arguments, connection
+        )
+        return self._insert_call(
+            target,
+            connector.key,
+            action.name,
+            capability,
+            args.model_dump(mode="json"),
+            summary,
+            recipients,
+            needs_approval,
+            idempotency_key,
+            request_id,
+        )
 
+    def preview_call(
+        self, capability: str, arguments: dict[str, Any], *, connection: str | None = None
+    ) -> dict[str, Any]:
+        """Validate a call and say whether it needs approval, without doing anything."""
+        self._authz.require("actions.request", "having agents send email or use apps")
+        target, _c, _a, args, recipients, summary, needs_approval = self._prepare_call(
+            capability, arguments, connection
+        )
+        return {
+            "connection": target["name"],
+            "summary": summary,
+            "needs_approval": needs_approval,
+            "arguments": args.model_dump(mode="json"),
+        }
+
+    def _prepare_call(
+        self, capability: str, arguments: dict[str, Any], connection: str | None
+    ) -> tuple[Any, ...]:
         purpose = arguments.get("purpose", "transactional") if isinstance(arguments, dict) else None
         target = self.resolve(capability, purpose or "general", connection)
         connector = self._type(target["connector_type"])
@@ -471,6 +504,23 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
             )
 
         needs_approval = action.side_effect == "external_send" and policy["approval"] == "required"
+        return target, connector, action, args, recipients, summary, needs_approval
+
+    def _insert_call(
+        self,
+        target: dict[str, Any],
+        connector_key: str,
+        action_name: str,
+        capability: str | None,
+        arguments: dict[str, Any],
+        summary: str,
+        recipients: int | None,
+        needs_approval: bool,
+        idempotency_key: str | None,
+        request_id: uuid.UUID | None,
+        purpose: str | None = None,
+    ) -> dict[str, Any]:
+        purpose = purpose or arguments.get("purpose", "general")
         call_id = uuid.uuid4()
         p = self._principal
         self._conn.execute(
@@ -483,13 +533,13 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
             (
                 call_id,
                 target["id"],
-                connector.key,
-                action.name,
+                connector_key,
+                action_name,
                 capability,
                 purpose,
                 "awaiting_approval" if needs_approval else "running",
                 summary,
-                Jsonb(args.model_dump(mode="json")),
+                Jsonb(arguments),
                 recipients,
                 p.user_id,
                 p.actor_type.value,
