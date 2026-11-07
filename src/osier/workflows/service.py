@@ -44,6 +44,7 @@ from .spec import (
     GetRecord,
     QueryRecords,
     ScheduleTrigger,
+    Transform,
     UpdateRecord,
     WorkflowError,
     check,
@@ -897,7 +898,27 @@ class WorkflowService:
                 )
             }
         if isinstance(step, Condition):
+            if step.expression:
+                from .expressions import evaluate
+
+                value = evaluate(step.expression, context, f"steps.{step.id}.expression")
+                if not isinstance(value, bool):
+                    raise WorkflowError(
+                        f"steps.{step.id}: the expression must give true or false, not "
+                        f"{type(value).__name__}.",
+                        code="EXPRESSION_FAILED",
+                    )
+                return {"result": value}
             return {"result": all(check(c, context) for c in step.when)}
+        if isinstance(step, Transform):
+            from .expressions import evaluate
+
+            values: dict[str, Any] = {}
+            for name, expression in step.values.items():
+                values[name] = evaluate(
+                    expression, {**context, "values": values}, f"steps.{step.id}.{name}"
+                )
+            return values
         if isinstance(step, Finish):
             return {"output": resolve(step.output, context)}
         raise WorkflowError(f"Unsupported step type {step.type!r}.")
@@ -988,6 +1009,8 @@ def describe_trigger(trigger: Any) -> str:
 
 def describe_step(step: Any) -> str:
     """One line per step, for confirmation prompts."""
+    if isinstance(step, Transform):
+        return f"{step.id}: compute {', '.join(step.values)}"
     if isinstance(step, ConnectorStep):
         what = (
             f"use {step.capability}" + (f" via {step.connection}" if step.connection else "")

@@ -218,6 +218,14 @@ permissions of whoever started the run, and the connection's tool policies: an a
 that needs approval pauses the run until someone approves it in the approval queue,
 then the worker continues the run.
 
+### Calculations in workflows
+
+A `transform` step computes values with CEL expressions, for example a debt-to-income
+ratio: `"dti": "double(steps.applicant.record.monthly_debt) / double(steps.applicant.record.monthly_income)"`.
+Later steps use `{{steps.<step>.dti}}`, and conditions can branch on an expression such
+as `steps.calc.dti > 0.43`. Expressions cannot run code or reach anything outside the
+workflow's own data.
+
 ### AI steps
 
 Workflows can include AI steps that use your organization's own model connections:

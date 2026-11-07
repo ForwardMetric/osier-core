@@ -36,7 +36,8 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/workflows/` — workflows: `spec.py` (declarative definition, references,
   validation), `service.py` (`WorkflowService`: versions, runs, approvals; compiles to a
   LangGraph graph), `checkpoint.py` (LangGraph checkpointer on `TenantConnection`),
-  `triggers.py` (record events and schedules → queued runs); `src/osier/runtime.py` —
+  `triggers.py` (record events and schedules → queued runs), `expressions.py` (CEL for
+  transform steps and conditions); `src/osier/runtime.py` —
   process-wide broker and network rules for steps that run outside a request
 - `src/osier/jobs/` — background jobs behind the `JobBackend` interface (`base.py`):
   `settings.py` (per-tenant settings), `runner.py` (`execute_run`, the engine entry

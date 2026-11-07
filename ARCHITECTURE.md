@@ -1027,6 +1027,23 @@ including Claude's, can be imported.
   rules used by steps that run outside a request (worker, MCP server, CLI).
 - Resuming after an approval needs the worker (`osier worker`).
 
+### 12.5c Data steps with CEL (built)
+
+- Step type `transform` (`values: {name: expression}`) and `condition.expression`, in
+  **CEL** (Common Expression Language, used by Kubernetes and Google Cloud IAM):
+  no loops, no side effects, no access beyond `inputs`, `steps`, and `values`.
+- Library: **common-expression-language** 0.10 (Apache-2.0, Rust interpreter;
+  pinned `<0.11`), chosen over cel-python after a comparison: about 7x faster in a
+  probe (200 evaluations: 11 ms vs 77 ms), plain Python results, clearer errors, and it
+  reports the variables an expression uses, which we check on save. Costs: pre-1.0,
+  and it pulls CLI dependencies (typer, rich, prompt-toolkit). The CEL string, list,
+  math, set and base64 extensions are enabled.
+- Checked on save: syntax, length (2000 chars), names, and that `steps.<id>` refers to
+  an earlier step. At run time: errors and non-finite numbers (e.g. division by zero)
+  fail the step with `EXPRESSION_FAILED`; results are limited to 100 KB.
+- Decimal fields arrive as text (stored exactly), so arithmetic needs `double(...)`;
+  this loses exactness for money. A decimal-safe option is not built.
+
 ### 12.6 Tools per tenant (planned)
 
 Tenants already add tools by connecting MCP servers (§13.2). Next: a tenant

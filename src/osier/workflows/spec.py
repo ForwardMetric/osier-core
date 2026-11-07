@@ -105,7 +105,8 @@ class UpdateRecord(_Step):
 
 class Condition(_Step):
     type: Literal["condition"]
-    when: list[Check] = Field(min_length=1, max_length=10)  # all must hold
+    when: list[Check] = Field(default_factory=list, max_length=10)  # all must hold
+    expression: str | None = Field(default=None, max_length=2000)  # CEL, alternative
     then: str
     else_: str = Field(default=END, alias="else")
 
@@ -120,6 +121,15 @@ class Approval(_Step):
 class Finish(_Step):
     type: Literal["finish"]
     output: dict[str, Any] = Field(default_factory=dict)
+
+
+class Transform(_Step):
+    """Compute values with CEL expressions (no code, no side effects). Results are
+    available to later steps as ``{{steps.<id>.<name>}}``; each expression may use
+    ``inputs``, ``steps``, and ``values`` computed earlier in this step."""
+
+    type: Literal["transform"]
+    values: dict[str, str] = Field(min_length=1, max_length=30)
 
 
 class ConnectorStep(_Step):
@@ -181,7 +191,8 @@ Step = Annotated[
     | Approval
     | Finish
     | AgentStep
-    | ConnectorStep,
+    | ConnectorStep
+    | Transform,
     Field(discriminator="type"),
 ]
 STEP_TYPES = [
@@ -194,6 +205,7 @@ STEP_TYPES = [
     "finish",
     "agent",
     "connector",
+    "transform",
 ]
 
 
@@ -391,6 +403,10 @@ def validate_definition(definition: Definition, snapshot: SchemaSnapshot) -> lis
         if isinstance(step, AgentStep):
             objects |= _validate_agent(step, where, snapshot)
             continue
+        if isinstance(step, Transform | Condition):
+            _validate_expressions(step, where, i, position)
+            if isinstance(step, Transform):
+                continue
         if isinstance(step, ConnectorStep):
             if bool(step.capability) == bool(step.tool):
                 raise WorkflowError(
@@ -419,6 +435,32 @@ def validate_definition(definition: Definition, snapshot: SchemaSnapshot) -> lis
     for i, trigger in enumerate(definition.triggers):
         objects |= _validate_trigger(definition, trigger, f"triggers.{i}", snapshot)
     return sorted(objects)
+
+
+def _validate_expressions(step: Any, where: str, index: int, position: dict[str, int]) -> None:
+    from .expressions import check as check_expression
+
+    if isinstance(step, Condition):
+        if bool(step.when) == bool(step.expression):
+            raise WorkflowError(
+                f"{where}: give either 'when' checks or an 'expression'.", field=where
+            )
+        expressions = {"expression": step.expression} if step.expression else {}
+    else:
+        expressions = step.values
+        for name in step.values:
+            if not re.fullmatch(r"^[a-z][a-z0-9_]{0,39}$", name):
+                raise WorkflowError(
+                    f"{where}: value name {name!r} must be lowercase_with_underscores.", field=where
+                )
+    for name, expression in expressions.items():
+        check_expression(expression, f"{where}.{name}")
+        for ref in re.findall(r"\bsteps\.([a-z][a-z0-9_]*)", expression):
+            if ref not in position or position[ref] >= index:
+                raise WorkflowError(
+                    f"{where}.{name} refers to steps.{ref}, which is not an earlier step.",
+                    field=where,
+                )
 
 
 def _validate_agent(step: AgentStep, where: str, snapshot: SchemaSnapshot) -> set[str]:
