@@ -22,6 +22,7 @@ from ..errors import (
 )
 from .base import ConnectorType, ExecutionContext
 from .email import SendEmail
+from .mcp_service import McpConnectorsMixin
 from .vault import CredentialBroker
 
 ENGINE_SERVICE = "connectors"
@@ -49,13 +50,15 @@ def _validation_error(message: str, exc: PydanticValidationError) -> RecordValid
     )
 
 
-class ConnectorService:
+class ConnectorService(McpConnectorsMixin):
     def __init__(
         self,
         session: Any,  # Session (avoids an import cycle)
         broker: CredentialBroker,
         *,
         allow_private_network: bool = False,
+        allow_local_processes: bool = False,
+        mcp_client_factory: Any = None,
     ) -> None:
         from . import CONNECTOR_TYPES
 
@@ -67,6 +70,8 @@ class ConnectorService:
         self._types = CONNECTOR_TYPES
         self._records = session.records.for_engine(ENGINE_SERVICE)
         self._allow_private_network = allow_private_network
+        self._allow_local_processes = allow_local_processes
+        self._mcp_client_factory = mcp_client_factory
 
     # ---- helpers ---------------------------------------------------------------------
 
@@ -209,7 +214,17 @@ class ConnectorService:
     def _describe_connection(self, record: dict[str, Any]) -> dict[str, Any]:
         connector = self._types.get(record["connector_type"])
         policy = self._policy(record["id"])
+        extra: dict[str, Any] = {}
+        if record["connector_type"].startswith("c__"):
+            ctype = self._mcp_type(record["connector_type"])
+            extra = {
+                "runtime": "mcp",
+                "server_status": ctype["status"],
+                "tools": [t["name"] for t in ctype["tools"]],
+                "hint": "Use list_connector_tools and call_connector_tool with this connection.",
+            }
         return {
+            **extra,
             "id": record["id"],
             "name": record["name"],
             "connector_type": record["connector_type"],
@@ -464,7 +479,7 @@ class ConnectorService:
         }
         if row["status"] == "awaiting_approval":
             view["next_step"] = (
-                "Nothing has been sent. A person must approve this with "
+                "Nothing has been sent or run. A person must approve this with "
                 f"'osier approvals approve {row['id']}'."
             )
         if include_arguments:
@@ -474,6 +489,9 @@ class ConnectorService:
     def _execute(self, call_id: uuid.UUID) -> None:
         row = self._get_call(call_id)
         connection = self._session.records.get("connection", row["connection_id"])
+        if row["connector_type"].startswith("c__"):
+            self._execute_mcp(row, connection)
+            return
         connector = self._type(row["connector_type"])
         action = connector.action(row["action"])
         assert action is not None
@@ -542,7 +560,7 @@ class ConnectorService:
                 ),
             )
             update: dict[str, Any] = {"last_used_at": dt.datetime.now(dt.UTC)}
-            if status == "failed":
+            if status == "failed" and (error or {}).get("code") != "TOOL_RETURNED_ERROR":
                 update |= {"status": "error", "last_error": (error or {}).get("message")}
             elif connection["status"] != "active":
                 update |= {"status": "active", "last_error": None}

@@ -36,10 +36,10 @@ def server(config, conn):
     return build_server(config, sessions=Sessions())
 
 
-def call(server, tool, **arguments):
+def call(server, tool_name, /, **arguments):
     async def go():
         async with Client(server) as client:
-            result = await client.call_tool(tool, arguments)
+            result = await client.call_tool(tool_name, arguments)
             text = result.content[0].text
             if result.is_error:
                 return {"error": json.loads(text[text.index("{") :])}
@@ -182,3 +182,49 @@ def test_agent_cannot_change_protected_or_engine_managed_objects(server):
 
 def test_empty_lists_still_return_an_object(server):
     assert call(server, "list_connections") == {"connections": [], "count": 0}
+
+
+def test_connector_tools_through_the_mcp_server(server, config, conn):
+    import sys
+    from pathlib import Path
+
+    fixture = str(Path(__file__).parent / "fixtures" / "notes_mcp_server.py")
+    transport = {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": [fixture],
+        "secret_env": ["NOTES_TOKEN"],
+    }
+    admin = ConnectorService(
+        config.session(config.admin(), conn), config.broker(), allow_local_processes=True
+    )
+    inspected = admin.inspect_mcp_server(transport, {"NOTES_TOKEN": "secret-token"})
+    admin.register_mcp_server(
+        "Notes",
+        description="Team notes app used for research.",
+        transport=transport,
+        secrets={"NOTES_TOKEN": "secret-token"},
+        expected_tools_hash=inspected["tools_hash"],
+    )
+    tools = call(server, "list_connector_tools", connection="Notes")
+    assert {t["name"] for t in tools["tools"]} == {
+        "search_notes",
+        "create_note",
+        "delete_all_notes",
+    }
+    found = call(
+        server,
+        "call_connector_tool",
+        connection="Notes",
+        tool="search_notes",
+        arguments={"query": "acme"},
+    )
+    assert found["status"] == "succeeded" and found["result"]["untrusted"] is True
+    pending = call(
+        server,
+        "call_connector_tool",
+        connection="Notes",
+        tool="create_note",
+        arguments={"title": "x", "body": "y"},
+    )
+    assert pending["status"] == "awaiting_approval"

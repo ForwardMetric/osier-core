@@ -10,6 +10,7 @@ import argparse
 import getpass
 import json
 import os
+import shlex
 import shutil
 import sys
 import uuid
@@ -145,7 +146,8 @@ def cmd_approvals_list(args: argparse.Namespace) -> None:
             print(f"    BLOCKER: {b['message']}")
     for c in calls:
         print(
-            f"[action] {c['call_id']}  ({c['capability']}, requested by {c['requested_by_type']})"
+            f"[action] {c['call_id']}  ({c['capability'] or c['connector_type']}, "
+            f"requested by {c['requested_by_type']})"
         )
         print(f"    {c['summary']}")
 
@@ -197,16 +199,15 @@ def cmd_approvals_approve(args: argparse.Namespace) -> None:
         _print(result.to_dict())
     else:
         print(item["summary"])
-        if item.get("arguments"):
-            print(f"  Body:\n{item['arguments'].get('body_text', '')}")
+        arguments = item.get("arguments") or {}
+        if "body_text" in arguments:
+            print(f"  Body:\n{arguments['body_text']}")
+        elif arguments:
+            print("  Arguments:\n" + json.dumps(arguments, indent=2, default=str))
         if not _confirm("Run this action now?", args.yes):
             print("Not run.")
             return
-        _print(
-            ConnectorService(
-                session, config.broker(), allow_private_network=config.allow_private_network
-            ).approve(args.id)
-        )
+        _print(_connectors(config).approve(args.id))
 
 
 def cmd_approvals_reject(args: argparse.Namespace) -> None:
@@ -224,7 +225,10 @@ def cmd_approvals_reject(args: argparse.Namespace) -> None:
 
 def _connectors(config: DevConfig) -> ConnectorService:
     return ConnectorService(
-        _admin(config), config.broker(), allow_private_network=config.allow_private_network
+        _admin(config),
+        config.broker(),
+        allow_private_network=config.allow_private_network,
+        allow_local_processes=config.allow_local_processes,
     )
 
 
@@ -266,6 +270,88 @@ def cmd_connect_outbox(args: argparse.Namespace) -> None:
             config={"from_address": args.from_address},
         )
     )
+
+
+def _ask_secret(name: str) -> str:
+    env_name = "OSIER_SECRET_" + "".join(c if c.isalnum() else "_" for c in name.upper())
+    return os.environ.get(env_name) or getpass.getpass(f"Value for {name}: ")
+
+
+def _print_tools(tools: list[dict[str, Any]], policy_key: str) -> None:
+    for t in tools:
+        hints = ", ".join(k for k, v in t.get("annotations", {}).items() if v is True) or "-"
+        print(f"  {t['name']:<32} {t[policy_key]:<9} hints: {hints}")
+        print(f"      {t['description'][:200]}")
+
+
+def cmd_connect_mcp(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    if bool(args.url) == bool(args.command):
+        raise OsierError("Give either --url (remote server) or --command (local server).")
+    transport: dict[str, Any] = (
+        {"type": "http", "url": args.url, "secret_headers": args.secret_header or []}
+        if args.url
+        else {
+            "type": "stdio",
+            "command": args.command,
+            "args": args.arg or [],
+            "secret_env": args.secret_env or [],
+        }
+    )
+    secrets = {
+        name: _ask_secret(name) for name in [*(args.secret_header or []), *(args.secret_env or [])]
+    }
+    svc = _connectors(config)
+    inspected = svc.inspect_mcp_server(transport, secrets)
+    print(
+        f"{len(inspected['tools'])} tools offered by this server "
+        "(auto = runs immediately, approval = you approve each call):"
+    )
+    _print_tools(inspected["tools"], "default_policy")
+    print("Tool descriptions come from the server; read them before trusting it.")
+    if not _confirm("Connect this server with these tools and policies?", args.yes):
+        print("Not connected.")
+        return
+    connection = svc.register_mcp_server(
+        args.name,
+        description=args.description,
+        transport=transport,
+        secrets=secrets,
+        expected_tools_hash=inspected["tools_hash"],
+    )
+    print(f"Connected {connection['name']} ({connection['connector_type']}).")
+    print(
+        f"Change a tool's policy with: osier connections policy {shlex.quote(args.name)} "
+        "<tool> auto|approval|blocked"
+    )
+
+
+def cmd_connections_tools(args: argparse.Namespace) -> None:
+    listed = _connectors(DevConfig.load()).list_tools(args.name)
+    print(f"{listed['server']} ({listed['status']}):")
+    _print_tools(listed["tools"], "policy")
+
+
+def cmd_connections_policy(args: argparse.Namespace) -> None:
+    _connectors(DevConfig.load()).set_tool_policy(args.name, args.tool, args.policy)
+    print(f"{args.tool}: {args.policy}")
+
+
+def cmd_connections_review(args: argparse.Namespace) -> None:
+    svc = _connectors(DevConfig.load())
+    review = svc.review_mcp_tools(args.name)
+    if not (review["added"] or review["removed"] or review["changed"]):
+        print("No changes: the server's tools match what you approved.")
+        return
+    for key in ("added", "removed", "changed"):
+        if review[key]:
+            print(f"{key}: {', '.join(review[key])}")
+    current = {t["name"]: t for t in review["tools"]}
+    for name in review["added"] + review["changed"]:
+        print(f"  {name}: {current[name]['description'][:300]}")
+    if _confirm("Accept the server's current tools?", args.yes):
+        svc.accept_mcp_tools(args.name, review["tools_hash"])
+        print("Accepted. Changed tools went back to their default policy.")
 
 
 def cmd_connections_list(args: argparse.Namespace) -> None:
@@ -365,11 +451,39 @@ def build_parser() -> argparse.ArgumentParser:
     outbox.add_argument("--default", action="store_true")
     outbox.add_argument("--auto-approve", action="store_true")
     outbox.set_defaults(func=cmd_connect_outbox)
+    mcp_p = connect.add_parser("mcp", help="connect an app through its MCP server")
+    mcp_p.add_argument("--name", required=True, help="e.g. Notion")
+    mcp_p.add_argument(
+        "--description", required=True, help="what the app is used for (at least 4 words)"
+    )
+    mcp_p.add_argument("--url", help="remote MCP endpoint (https)")
+    mcp_p.add_argument(
+        "--secret-header", action="append", help="header carrying a secret, e.g. Authorization"
+    )
+    mcp_p.add_argument("--command", help="local MCP server command, e.g. npx")
+    mcp_p.add_argument("--arg", action="append", help="argument for --command (repeatable)")
+    mcp_p.add_argument(
+        "--secret-env", action="append", help="environment variable with a secret value"
+    )
+    mcp_p.add_argument("-y", "--yes", action="store_true")
+    mcp_p.set_defaults(func=cmd_connect_mcp)
 
     conns = sub.add_parser("connections", help="list connections").add_subparsers(
         dest="connections_command", required=True
     )
     conns.add_parser("list").set_defaults(func=cmd_connections_list)
+    tools_p = conns.add_parser("tools", help="tools of an MCP server connection")
+    tools_p.add_argument("name")
+    tools_p.set_defaults(func=cmd_connections_tools)
+    policy_p = conns.add_parser("policy", help="set a tool's policy")
+    policy_p.add_argument("name")
+    policy_p.add_argument("tool")
+    policy_p.add_argument("policy", choices=["auto", "approval", "blocked"])
+    policy_p.set_defaults(func=cmd_connections_policy)
+    review_p = conns.add_parser("review", help="review changed tools of an MCP server")
+    review_p.add_argument("name")
+    review_p.add_argument("-y", "--yes", action="store_true")
+    review_p.set_defaults(func=cmd_connections_review)
 
     out = sub.add_parser("outbox", help="recent emails and connector actions")
     out.add_argument("--limit", type=int, default=20)

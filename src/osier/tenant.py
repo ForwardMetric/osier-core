@@ -168,6 +168,7 @@ _ENGINE_DDL = [
         approval       text NOT NULL DEFAULT 'required'
                        CHECK (approval IN ('required', 'not_required')),
         max_recipients integer NOT NULL DEFAULT 10 CHECK (max_recipients BETWEEN 1 AND 50),
+        tool_policies  jsonb NOT NULL DEFAULT '{{}}',
         updated_at     timestamptz NOT NULL DEFAULT now(),
         updated_by     uuid
     )
@@ -198,6 +199,23 @@ _ENGINE_DDL = [
         created_at       timestamptz NOT NULL DEFAULT now(),
         decided_at       timestamptz,
         completed_at     timestamptz
+    )
+    """,
+    """
+    CREATE TABLE {s}.meta_connector_types (
+        key          text PRIMARY KEY,
+        label        text NOT NULL,
+        description  text NOT NULL,
+        runtime      text NOT NULL CHECK (runtime IN ('mcp', 'http')),
+        transport    jsonb NOT NULL,
+        tools        jsonb NOT NULL,
+        tools_hash   text NOT NULL,
+        status       text NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'needs_review', 'retired')),
+        created_by   uuid NOT NULL,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        reviewed_by  uuid,
+        reviewed_at  timestamptz
     )
     """,
     "CREATE INDEX ON {s}.connector_calls (connection_id, created_at)",

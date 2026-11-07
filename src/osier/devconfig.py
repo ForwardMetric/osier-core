@@ -36,6 +36,8 @@ class DevConfig:
     agent_user_id: str
     key_file: str
     allow_private_network: bool = False
+    # Local development only: lets MCP connectors start local server processes (stdio).
+    allow_local_processes: bool = True
 
     @property
     def tenant(self) -> Tenant:

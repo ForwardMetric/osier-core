@@ -352,6 +352,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
+    { name = "jsonschema" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -366,6 +367,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=43" },
+    { name = "jsonschema", specifier = ">=4.23" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.7" },

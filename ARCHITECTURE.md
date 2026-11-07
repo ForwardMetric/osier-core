@@ -814,6 +814,25 @@ purpose routing, audit, automatic CRM logging (e.g. sent email → activity),
 and use by **background agents and workflows** when no chat client is open.
 Both modes are supported; the governed path goes through osier.
 
+**Built (runtime `mcp`):** a person inspects a server (`osier connect mcp`), sees
+its tools, and registers it. The engine stores a tenant connector type in
+`meta_connector_types` (transport, pinned tool definitions, hash) and a
+connection with encrypted secrets (HTTP headers or environment variables).
+Each tool has a policy: `auto` (runs immediately; default for tools the server
+marks read-only, confirmed by the person at registration because the hint is
+untrusted), `approval` (each call waits in the approval queue; default for
+everything else), or `blocked`. Arguments are validated against the pinned
+input schema. Before every call the server's current definition of the tool is
+compared with the pinned one; a difference fails the call and marks the
+connector `needs_review` until a person accepts the new tools
+(`osier connections review`), which resets changed tools to their default
+policy. Results are returned marked `untrusted`, truncated to a size limit.
+Transports: streamable HTTP (HTTPS only, network guard applies) and stdio local
+commands, which are **code execution on the host** and therefore allowed only
+when `allow_local_processes` is set (local development; never on a hosted
+platform). Not yet: OAuth sign-in to remote servers, and mapping server tools
+to capabilities (e.g. a vendor's send tool as `email.send`).
+
 **Risks of third-party MCP servers:** their tool descriptions and outputs are
 untrusted (prompt injection, "tool poisoning"). osier pins each registered
 server's tool definitions (hash) and requires re-approval when they change;
@@ -954,7 +973,7 @@ the implementation is written from first principles.
 |---|---|
 | **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. One tenant schema, always addressed by fully qualified names. |
 | **M2 — MCP server** | **Local version built:** stdio MCP server and `osier` CLI for Claude Desktop / Claude Code, structured queries, approvals from the CLI. **Remaining:** remote HTTPS transport with OAuth (claude.ai connectors). Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
-| **M2.5 — Connector foundation** | **Partly built:** `integrations` package, engine tables, credential broker (Fernet, local key file), MCP-shaped actions, SMTP and dev outbox connectors, routing, approval queue, audit, CRM logging. **Remaining:** registering remote MCP servers as connectors, declarative HTTP connectors, marketing email, connector policies via change sets. Engine tables (§13.6), credential broker with encryption, `connection` object, capability and purpose routing, action execution with policy and audit, one native connector, declarative HTTP runtime with network protections. Depends on system packages, package upgrades, and the `engine_managed` level (§13.7), which are built first. |
+| **M2.5 — Connector foundation** | **Partly built:** `integrations` package, engine tables, credential broker (Fernet, local key file), MCP-shaped actions, SMTP and dev outbox connectors, routing, approval queue, audit, CRM logging, MCP servers as connectors (§13.2). **Remaining:** OAuth sign-in to MCP servers, tool-to-capability mapping, declarative HTTP connectors, marketing email, connector policies via change sets. Engine tables (§13.6), credential broker with encryption, `connection` object, capability and purpose routing, action execution with policy and audit, one native connector, declarative HTTP runtime with network protections. Depends on system packages, package upgrades, and the `engine_managed` level (§13.7), which are built first. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |

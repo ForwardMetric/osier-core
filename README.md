@@ -48,6 +48,29 @@ uv run osier connect smtp --name "Gmail" --host smtp.gmail.com --port 587 --from
 With more than one email connection, add `--default` to one of them, or tell
 Claude which connection to use.
 
+**Optional: connect other apps through their MCP servers.** Any MCP server can
+become an osier connector. osier lists its tools for you to review, pins exactly
+what you approved, and lets agents call them with approvals and an audit trail.
+
+A remote server that accepts an API token (you are asked for the header value,
+e.g. `Bearer <token>`):
+
+```bash
+uv run osier connect mcp --name "Notes" --description "Team notes app used for account research." --url https://example.com/mcp --secret-header Authorization
+```
+
+A local server started as a command, with a token in an environment variable:
+
+```bash
+uv run osier connect mcp --name "Notes" --description "Team notes app used for account research." --command npx --arg -y --arg <server-package> --secret-env API_TOKEN
+```
+
+Read-only tools run immediately; other tools wait for your approval. Change that
+per tool with `osier connections policy <name> <tool> auto|approval|blocked`. If
+the server later changes a tool's definition, calls stop until you review it with
+`osier connections review <name>`. Servers that require an OAuth sign-in are not
+supported yet.
+
 **3. Connect Claude**
 
 Claude Code (run from this directory):
@@ -95,6 +118,7 @@ captured emails), `osier approvals show <id>`, `osier approvals reject <id>`.
 | `propose_schema_change`, `get_change_set` | Propose new objects or fields; you approve |
 | `list_packages`, `propose_install_packages` | Standard-object packages; you approve |
 | `list_connections`, `send_email`, `get_connector_call` | Email through your connections; sends wait for approval and are logged as activities |
+| `list_connector_tools`, `call_connector_tool` | Use connected apps' MCP tools: pinned definitions, per-tool approval policy, untrusted results |
 
 ## What is implemented
 
@@ -107,15 +131,15 @@ captured emails), `osier approvals show <id>`, `osier approvals reject <id>`.
   `case_management`); install, uninstall, additive upgrades; object access levels
   `open`, `protected`, `engine_managed`.
 - **Queries:** structured, validated, parameterized.
-- **Connectors:** MCP-shaped actions; SMTP and a development outbox; encrypted
-  credentials; capability + purpose routing; approval queue; audit; automatic CRM
-  logging.
+- **Connectors:** MCP-shaped actions; SMTP and a development outbox; any MCP
+  server (remote over HTTPS with token headers, or a local command) with pinned
+  tools, per-tool policies, and change detection; encrypted credentials;
+  capability + purpose routing; approval queue; audit; automatic CRM logging.
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
 Not yet (see the roadmap in ARCHITECTURE.md): remote MCP over HTTPS with OAuth
 (claude.ai connectors), role permissions, in-chat approval screens, views,
-marketing email, connectors for other apps (including registering existing MCP
-servers), multi-database placement, reporting, jobs and workflows.
+marketing email, OAuth sign-in to MCP servers, multi-database placement, reporting, jobs and workflows.
 
 ## Using the engine from Python
 
