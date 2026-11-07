@@ -961,6 +961,42 @@ including Claude's, can be imported.
   the tenant's people; it never grants permissions; every action it leads to is
   checked as usual.
 
+### 12.5a AI steps in workflows (built)
+
+- **Bring your own key.** Each tenant sets its own Claude API key and model with
+  `osier ai setup` (key typed at a hidden prompt, stored encrypted with
+  `CredentialBroker` in `meta_ai_settings`, never returned by any tool or log). osier
+  ships no default model. Changing AI settings needs `ai.manage` (admin only by
+  default, because it controls spending) and a person.
+- **Step type `agent`** in the workflow definition: `instructions` (with references),
+  optional `skill` (its text is added as data), `data` (values given to the model),
+  `tools` from `get_record`, `query_records`, `create_record`, `update_record`,
+  limited to the listed `objects`, a declared `output` (typed fields, optional enums),
+  `max_turns` (1–20, default 6), and `effort`.
+- **Execution:** a tool loop on the Anthropic Python SDK (Apache-2.0), written by us
+  rather than the SDK's tool runner so every tool call goes through `RecordService`
+  as the run's principal (source `workflow`, provenance `agent_inference`) with our
+  object allowlist and limits. The step ends only through a `submit_result` tool
+  (`strict: true`) whose input is validated against the declared output before later
+  steps use it; invalid results are sent back for correction. Workflows with AI steps
+  always run in the background worker.
+- **Untrusted content:** record contents, tool results and skill text are data; the
+  system prompt says so. A prompt injection can only do what the step's tools allow,
+  with the starter's permissions. Recommended pattern: read-only AI step, then an
+  approval, then a declarative update step.
+- **Limits and accounting:** a per-tenant monthly token cap (`monthly_token_limit`),
+  checked before every call; usage per call in `ai_usage` (run, step, model, tokens);
+  `osier ai status` and the `get_ai_status` tool show usage, never the key.
+- **Errors:** refusals (`AI_REFUSED`), cut-off output, turn limit, budget, bad request
+  or invalid key fail the step; rate limits, server and connection errors are retried
+  by the SDK and then by the job. Server-side refusal fallbacks (`fallbacks:
+  "default"`) are on by default (`refusal_fallback`); turn off for models that do not
+  support them.
+- **Known limits:** writes made by tools are not exactly-once if a worker crashes
+  mid-step (the step runs again; creates are deduplicated per call index only). Not
+  yet tested against the live API in CI; prompt caching, streaming, and per-step cost
+  reporting in currency are not built.
+
 ### 12.6 Tools per tenant (planned)
 
 Tenants already add tools by connecting MCP servers (§13.2). Next: a tenant
@@ -1194,7 +1230,7 @@ the implementation is written from first principles.
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
-| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). job queue, worker, record and schedule triggers (§12.7). **Next:** agent steps on the tenant's Claude key; metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
+| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). job queue, worker, record and schedule triggers (§12.7). AI steps on the tenant's own Claude key (§12.5a). **Next:** metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single

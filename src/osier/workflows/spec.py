@@ -122,8 +122,43 @@ class Finish(_Step):
     output: dict[str, Any] = Field(default_factory=dict)
 
 
+AGENT_TOOLS = ("get_record", "query_records", "create_record", "update_record")
+
+
+class OutputField(_Model):
+    type: Literal["string", "number", "integer", "boolean", "string_list"] = "string"
+    description: str = Field(min_length=1, max_length=500)
+    enum: list[str] | None = Field(default=None, max_length=50)
+
+
+class AgentStep(_Step):
+    """An AI step: Claude, with the tenant's own API key, works on ``instructions``
+    (and an optional skill), may use the listed record tools on the listed objects
+    with the run's permissions, and must return ``output`` (checked against the
+    declared fields). Always runs in the background worker."""
+
+    type: Literal["agent"]
+    instructions: str = Field(min_length=1, max_length=20_000)
+    skill: str | None = Field(default=None, max_length=64)
+    data: dict[str, Any] = Field(default_factory=dict)
+    tools: list[Literal["get_record", "query_records", "create_record", "update_record"]] = Field(
+        default_factory=list, max_length=4
+    )
+    objects: list[str] = Field(default_factory=list, max_length=10)
+    output: dict[str, OutputField] = Field(min_length=1, max_length=30)
+    max_turns: int = Field(default=6, ge=1, le=20)
+    effort: Literal["low", "medium", "high"] | None = None
+
+
 Step = Annotated[
-    GetRecord | QueryRecords | CreateRecord | UpdateRecord | Condition | Approval | Finish,
+    GetRecord
+    | QueryRecords
+    | CreateRecord
+    | UpdateRecord
+    | Condition
+    | Approval
+    | Finish
+    | AgentStep,
     Field(discriminator="type"),
 ]
 STEP_TYPES = [
@@ -134,6 +169,7 @@ STEP_TYPES = [
     "condition",
     "approval",
     "finish",
+    "agent",
 ]
 
 
@@ -328,6 +364,9 @@ def validate_definition(definition: Definition, snapshot: SchemaSnapshot) -> lis
                 + [f"steps.{s}" for s in ids[:i]],
             )
 
+        if isinstance(step, AgentStep):
+            objects |= _validate_agent(step, where, snapshot)
+            continue
         object_name = getattr(step, "object", None)
         if isinstance(step, QueryRecords):
             object_name = step.query.get("object")
@@ -346,6 +385,45 @@ def validate_definition(definition: Definition, snapshot: SchemaSnapshot) -> lis
     for i, trigger in enumerate(definition.triggers):
         objects |= _validate_trigger(definition, trigger, f"triggers.{i}", snapshot)
     return sorted(objects)
+
+
+def _validate_agent(step: AgentStep, where: str, snapshot: SchemaSnapshot) -> set[str]:
+    if step.tools and not step.objects:
+        raise WorkflowError(
+            f"{where}: list the objects the AI step's tools may use.",
+            field=where,
+            hint='e.g. "objects": ["lead"]',
+        )
+    if step.objects and not step.tools:
+        raise WorkflowError(f"{where}: 'objects' needs 'tools'.", field=where)
+    if step.skill is not None and not NAME.fullmatch(step.skill):
+        raise WorkflowError(f"{where}: invalid skill name {step.skill!r}.", field=where)
+    for name in step.output:
+        if not re.fullmatch(r"^[a-z][a-z0-9_]{0,39}$", name):
+            raise WorkflowError(
+                f"{where}: output field {name!r} must be lowercase_with_underscores.",
+                field=where,
+            )
+    return {snapshot.get_object(o).api_name for o in step.objects}
+
+
+def output_schema(step: AgentStep) -> dict[str, Any]:
+    """The JSON schema an AI step's result must match."""
+    props: dict[str, Any] = {}
+    for name, f in step.output.items():
+        if f.type == "string_list":
+            prop: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
+        else:
+            prop = {"type": f.type}
+        if f.enum:
+            prop = {**prop, "enum": f.enum} if f.type == "string" else prop
+        props[name] = {**prop, "description": f.description}
+    return {
+        "type": "object",
+        "properties": props,
+        "required": sorted(step.output),
+        "additionalProperties": False,
+    }
 
 
 def _validate_trigger(

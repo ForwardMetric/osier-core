@@ -209,6 +209,22 @@ once") or from the terminal:
 ```bash
 uv run osier jobs settings --set concurrency=4
 ```
+
+### AI steps
+
+Workflows can include AI steps that use your organization's own Claude API key. An
+administrator sets the key and model once (the key prompt is hidden; the key is
+stored encrypted and never shown again):
+
+```bash
+uv run osier ai setup --model <claude-model-id>
+```
+
+An AI step gets instructions, optional skill text, the data you pass it, and only the
+record tools and objects you list; it must return the fields you declare, which later
+steps can use (for example in an approval message). AI steps run in the worker and
+count against a monthly token limit (`osier ai settings --set
+monthly_token_limit=...`, `osier ai status`).
 Adding and changing skills needs the Developer or Admin role; everyone can use
 the skills shared with them.
 
@@ -256,7 +272,7 @@ the skills shared with them.
 
 Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone
 signing in to osier), object- and field-level permissions, views, marketing email,
-multi-database placement, reporting, agent steps in workflows, skills with scripts.
+multi-database placement, reporting, skills with scripts.
 
 ## Using the engine from Python
 

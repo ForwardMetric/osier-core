@@ -533,3 +533,16 @@ def test_job_settings_in_chat(server):
     assert done["settings"]["concurrency"] == 4 and "concurrency: 2 -> 4" in prompts[0]
     bad = call(server, "update_job_settings", _answer="accept", changes={"concurrency": 99})
     assert bad["error"]["code"] == "JOB_SETTINGS_INVALID" and prompts == []
+
+
+def test_ai_status_in_chat_never_shows_the_key(server, config, conn):
+    from osier.ai import AIService
+    from osier.connectors.vault import CredentialBroker
+
+    status = call(server, "get_ai_status")
+    assert status["api_key_configured"] is False and status["settings"]["model"] is None
+    admin = config.session(config.admin(), conn)
+    broker = CredentialBroker(open(config.key_file, "rb").read().strip())
+    AIService(admin, broker).update({"model": "test-model"}, api_key="sk-secret-value")
+    status = call(server, "get_ai_status")
+    assert status["api_key_configured"] is True and "sk-secret" not in json.dumps(status)

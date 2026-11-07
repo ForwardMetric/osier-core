@@ -34,6 +34,7 @@ from .spec import (
     END as END_TARGET,
 )
 from .spec import (
+    AgentStep,
     Approval,
     Condition,
     CreateRecord,
@@ -359,6 +360,7 @@ class WorkflowService:
             raise NotFoundError(f"Workflow {name!r} is disabled.", code="WORKFLOW_DISABLED")
         definition = self._definition(row["id"], row["version"])
         checked = self._check_inputs(definition, inputs or {})
+        background = background or has_ai_steps(definition)  # AI steps never block a request
         run_id = self.create_run(row, checked, self._principal, queued=background)
         if background:
             return self.get_run(run_id)
@@ -585,6 +587,9 @@ class WorkflowService:
             "decided_by": str(self._principal.user_id),
             "comment": comment,
         }
+        background = background or has_ai_steps(
+            self._definition(run["workflow_id"], run["version"])
+        )
         claimed = self._conn.execute(
             sql.SQL(
                 "UPDATE {} SET status = %s, waiting = NULL, resume_with = %s, "
@@ -747,9 +752,10 @@ class WorkflowService:
 
     def _node(self, step: Any, run_id: uuid.UUID) -> Any:
         # Changes made by workflow steps are marked as such and never fire triggers.
-        records = self._session.as_principal(
+        step_session = self._session.as_principal(
             dataclasses.replace(self._principal, source="workflow")
-        ).records
+        )
+        records = step_session.records
         provenance = {"source_type": "system", "source_ref": f"workflow run {run_id}"}
 
         def run(state: RunState) -> dict[str, Any]:
@@ -764,7 +770,12 @@ class WorkflowService:
                 )
                 return {"steps": {step.id: _plain(decision)}}
             try:
-                result = self._run_step(step, context, records, provenance, run_id)
+                if isinstance(step, AgentStep):
+                    from .agent_step import run_agent_step
+
+                    result = run_agent_step(step, context, step_session, run_id)
+                else:
+                    result = self._run_step(step, context, records, provenance, run_id)
             except OsierError as exc:
                 raise _StepFailed(step.id, exc) from None
             return {"steps": {step.id: _plain(result)}}
@@ -816,6 +827,10 @@ class WorkflowService:
         raise WorkflowError(f"Unsupported step type {step.type!r}.")
 
 
+def has_ai_steps(definition: Definition) -> bool:
+    return any(isinstance(s, AgentStep) for s in definition.steps)
+
+
 def describe_trigger(trigger: Any) -> str:
     if isinstance(trigger, ScheduleTrigger):
         return (
@@ -833,6 +848,17 @@ def describe_trigger(trigger: Any) -> str:
 
 def describe_step(step: Any) -> str:
     """One line per step, for confirmation prompts."""
+    if isinstance(step, AgentStep):
+        tools = (
+            f"may {', '.join(step.tools)} on {', '.join(step.objects)}"
+            if step.tools
+            else "no tools"
+        )
+        skill = f", following skill {step.skill!r}" if step.skill else ""
+        return (
+            f"{step.id}: AI step ({tools}{skill}) returning {', '.join(step.output)}; "
+            "uses this organization's AI tokens"
+        )
     if isinstance(step, GetRecord):
         return f"{step.id}: read a {step.object} record"
     if isinstance(step, QueryRecords):

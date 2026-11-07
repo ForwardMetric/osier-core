@@ -607,8 +607,12 @@ def cmd_worker(args: argparse.Namespace) -> None:
     import asyncio
     import logging
 
+    from . import ai
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    worker = _worker(DevConfig.load())
+    config = DevConfig.load()
+    ai.configure_runtime(broker=config.broker())  # AI steps decrypt the tenant's key
+    worker = _worker(config)
     if args.once:
         _print(asyncio.run(worker.run_until_idle()))
         return
@@ -686,6 +690,64 @@ def cmd_workflows_status(args: argparse.Namespace) -> None:
 
 def cmd_workflows_versions(args: argparse.Namespace) -> None:
     _print(_admin(DevConfig.load()).workflows.versions(args.name))
+
+
+def cmd_ai_setup(args: argparse.Namespace) -> None:
+    import getpass
+
+    from .ai import AIService
+
+    config = DevConfig.load()
+    service = AIService(_admin(config), config.broker())
+    model = args.model or input("Claude model id to use: ").strip()
+    print(
+        "Paste the organization's Claude API key (input is hidden; it is stored "
+        "encrypted and never shown again)."
+    )
+    key = getpass.getpass("API key: ")
+    result = service.update({"model": model}, api_key=key)
+    print(
+        f"Saved. Model: {result['settings']['model']}; API key configured: "
+        f"{result['api_key_configured']}."
+    )
+
+
+def cmd_ai_status(args: argparse.Namespace) -> None:
+    from .ai import AIService
+
+    _print(AIService(_admin(DevConfig.load())).status())
+
+
+def cmd_ai_settings(args: argparse.Namespace) -> None:
+    from .ai import AIService
+
+    config = DevConfig.load()
+    service = AIService(_admin(config), config.broker())
+    changes: dict[str, Any] = {}
+    for pair in args.set or []:
+        key, _, value = pair.partition("=")
+        if key == "api_key":
+            raise OsierError("Set the API key with `osier ai setup`.", code="AI_SETTINGS_INVALID")
+        changes[key] = {"true": True, "false": False}.get(value.lower(), value)
+    preview = service.preview(changes)
+    for key, change in preview["changes"].items():
+        print(f"  {key}: {change['from']} -> {change['to']}")
+    if not preview["changes"]:
+        _print(preview["settings"])
+        return
+    if not _confirm("Apply?", args.yes):
+        print("Not changed.")
+        return
+    service.update(changes)
+    print("Saved.")
+
+
+def cmd_ai_remove_key(args: argparse.Namespace) -> None:
+    from .ai import AIService
+
+    if _confirm("Remove the AI API key? AI steps will fail until a new one is set.", args.yes):
+        AIService(_admin(DevConfig.load())).remove_key()
+        print("Removed.")
 
 
 def cmd_connections_list(args: argparse.Namespace) -> None:
@@ -921,6 +983,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("status", choices=["active", "disabled", "retired"])
     p.set_defaults(func=cmd_workflows_status)
+
+    aip = sub.add_parser("ai", help="the organization's Claude API key, model, and limits")
+    aisub = aip.add_subparsers(dest="ai_command", required=True)
+    p = aisub.add_parser("setup", help="set the model and API key (key prompt is hidden)")
+    p.add_argument("--model")
+    p.set_defaults(func=cmd_ai_setup)
+    aisub.add_parser("status", help="settings and this month's usage").set_defaults(
+        func=cmd_ai_status
+    )
+    p = aisub.add_parser("settings", help="show or change AI settings")
+    p.add_argument("--set", action="append", help="NAME=VALUE, e.g. monthly_token_limit=500000")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.set_defaults(func=cmd_ai_settings)
+    p = aisub.add_parser("remove-key", help="remove the stored API key")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.set_defaults(func=cmd_ai_remove_key)
 
     w = sub.add_parser("worker", help="run background jobs and workflow triggers")
     w.add_argument("--once", action="store_true", help="run until idle, then exit")

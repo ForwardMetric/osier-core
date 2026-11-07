@@ -410,6 +410,31 @@ _ENGINE_MIGRATIONS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS {s}.meta_ai_settings (
+        id                 integer PRIMARY KEY CHECK (id = 1),
+        settings           jsonb NOT NULL,
+        secret_ciphertext  bytea,
+        key_id             text,
+        updated_by         uuid NOT NULL,
+        updated_at         timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.ai_usage (
+        id                 bigserial PRIMARY KEY,
+        run_id             uuid,
+        step_id            text,
+        model              text NOT NULL,
+        input_tokens       integer NOT NULL,
+        output_tokens      integer NOT NULL,
+        cache_read_tokens  integer NOT NULL DEFAULT 0,
+        at                 timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ai_usage_at ON {s}.ai_usage (at)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS {s}.meta_job_settings (
         id          integer PRIMARY KEY CHECK (id = 1),
         settings    jsonb NOT NULL,
@@ -510,6 +535,7 @@ _DATA_MIGRATIONS: list[tuple[str, list[tuple[str, str]]]] = [
         "2026-11-grant-jobs-manage",
         [(role, "jobs.manage") for role in ("admin", "developer")],
     ),
+    ("2026-11-grant-ai-manage", [("admin", "ai.manage")]),
 ]
 
 

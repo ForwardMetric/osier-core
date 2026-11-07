@@ -30,6 +30,7 @@ PERMISSIONS: dict[str, str] = {
     "tools.manage": "configure which tools agents may use",
     "workflows.manage": "create and change workflows",
     "jobs.manage": "view background jobs and change the organization's job settings",
+    "ai.manage": "set the organization's AI model, API key, and spending limits",
 }
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
