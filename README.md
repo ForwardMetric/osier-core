@@ -135,6 +135,21 @@ uv run osier connect mcp --oauth --name "Notion" --description "Company wiki and
 Share a connection with specific roles with `--visibility roles --role <role>`,
 or later with `osier connections share`.
 
+If the provider rejects the sign-in with an invalid redirect / callback error,
+change how osier's callback address is written and try again:
+
+```bash
+uv run osier dev oauth-redirect localhost
+```
+
+If it still fails, the provider probably requires an `https` callback. Run a
+tunnel to `http://127.0.0.1:8765` (for example Cloudflare Tunnel or ngrok) and
+give osier its address:
+
+```bash
+uv run osier dev oauth-redirect https://<your-tunnel-host>
+```
+
 ## MCP tools
 
 | Tool | What it does |

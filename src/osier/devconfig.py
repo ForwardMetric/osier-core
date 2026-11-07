@@ -40,6 +40,17 @@ class DevConfig:
     # Local development only: lets MCP connectors start local server processes (stdio).
     allow_local_processes: bool = True
     oauth_callback_port: int = 8765
+    # How the OAuth callback address is written: "127.0.0.1", "localhost", or a full
+    # https URL of a tunnel that forwards to the local callback port.
+    oauth_redirect: str = "127.0.0.1"
+
+    def redirect_uri(self) -> str:
+        from .connectors.oauth_callback import CALLBACK_PATH, redirect_uri
+
+        if self.oauth_redirect.startswith("https://"):
+            base = self.oauth_redirect.rstrip("/")
+            return base if base.endswith(CALLBACK_PATH) else base + CALLBACK_PATH
+        return redirect_uri(self.oauth_callback_port, self.oauth_redirect)
 
     @property
     def tenant(self) -> Tenant:

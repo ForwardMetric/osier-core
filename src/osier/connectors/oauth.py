@@ -227,9 +227,16 @@ class OAuthClient:
         body = response.json() if response.content else {}
         if response.status_code not in (200, 201) or "client_id" not in body:
             raise OAuthError(
-                f"Client registration was refused ({response.status_code}).",
+                f"Client registration was refused ({response.status_code}): "
+                f"{body.get('error_description') or body.get('error') or 'no reason given'}.",
                 code="OAUTH_REGISTRATION_FAILED",
-                details={"error": body.get("error")},
+                details={
+                    "error": body.get("error"),
+                    "error_description": body.get("error_description"),
+                    "redirect_uri": redirect_uri,
+                },
+                hint="Some providers reject certain callback addresses; try "
+                "'osier dev oauth-redirect localhost' or an https tunnel URL.",
             )
         return {"client_id": body["client_id"], "client_secret": body.get("client_secret")}
 

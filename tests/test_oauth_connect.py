@@ -358,3 +358,59 @@ def test_callback_server_passes_state_and_code_and_hides_internals():
             assert exc.code == 404
     finally:
         server.stop()
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        ("127.0.0.1", "http://127.0.0.1:8765/oauth/callback"),
+        ("localhost", "http://localhost:8765/oauth/callback"),
+        ("https://abc.example-tunnel.com", "https://abc.example-tunnel.com/oauth/callback"),
+        (
+            "https://abc.example-tunnel.com/oauth/callback/",
+            "https://abc.example-tunnel.com/oauth/callback",
+        ),
+    ],
+)
+def test_callback_address_setting(setting, expected):
+    import uuid as _uuid
+
+    from osier.devconfig import DevConfig
+
+    config = DevConfig(
+        database_url="x",
+        tenant_id=str(_uuid.uuid4()),
+        tenant_schema="t_" + "0" * 32,
+        organization_id="o",
+        admin_user_id=str(_uuid.uuid4()),
+        agent_user_id=str(_uuid.uuid4()),
+        key_file="k",
+        oauth_redirect=setting,
+    )
+    assert config.redirect_uri() == expected
+
+
+def test_registration_refusal_explains_the_reason(crm):
+    class Refusing(FakeProvider):
+        def handle(self, request):
+            if str(request.url) == "https://auth.notion.test/register":
+                return httpx2.Response(
+                    400,
+                    json={
+                        "error": "invalid_redirect_uri",
+                        "error_description": "redirect not allowed",
+                    },
+                )
+            return super().handle(request)
+
+    svc = service(crm, Refusing())
+    with pytest.raises(OsierError) as exc:
+        svc.start_mcp_oauth(
+            "Notion",
+            url=MCP_URL,
+            redirect_uri=REDIRECT,
+            description="Company wiki and meeting notes in Notion.",
+        )
+    assert exc.value.code == "OAUTH_REGISTRATION_FAILED"
+    assert "redirect not allowed" in exc.value.message
+    assert exc.value.details["redirect_uri"] == REDIRECT

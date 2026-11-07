@@ -7,6 +7,7 @@ with ``state`` and ``code``. A hosted osier serves the same path on its public U
 from __future__ import annotations
 
 import html
+import socket
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,10 +20,10 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>osier</title>
 </style></head><body><h1>{title}</h1><p>{message}</p></body></html>"""
 
 
-def redirect_uri(port: int) -> str:
-    # A loopback IP literal, as recommended for native apps (RFC 8252), avoids
-    # localhost resolving to IPv6 while the listener is on IPv4.
-    return f"http://127.0.0.1:{port}{CALLBACK_PATH}"
+def redirect_uri(port: int, host: str = "127.0.0.1") -> str:
+    # Default: a loopback IP literal, as recommended for native apps (RFC 8252). Some
+    # providers only accept "localhost"; the listener then serves IPv4 and IPv6.
+    return f"http://{host}:{port}{CALLBACK_PATH}"
 
 
 class CallbackServer:
@@ -68,9 +69,21 @@ class CallbackServer:
 
         self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        # "localhost" may resolve to ::1 in the browser; listen there too when possible.
+        try:
+
+            class V6Server(ThreadingHTTPServer):
+                address_family = socket.AF_INET6
+
+            self._server_v6 = V6Server(("::1", self.port), Handler)
+            threading.Thread(target=self._server_v6.serve_forever, daemon=True).start()
+        except OSError:
+            self._server_v6 = None
 
     def stop(self) -> None:
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
+        for server in (self._server, getattr(self, "_server_v6", None)):
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+        self._server = None
+        self._server_v6 = None

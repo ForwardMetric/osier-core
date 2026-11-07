@@ -145,6 +145,18 @@ def cmd_dev_add_user(args: argparse.Namespace) -> None:
     print(f"  osier mcp --as {args.email}")
 
 
+def cmd_dev_oauth_redirect(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    value = args.value
+    if value not in ("127.0.0.1", "localhost") and not value.startswith("https://"):
+        raise OsierError("Use 127.0.0.1, localhost, or an https tunnel URL.")
+    config.oauth_redirect = value
+    config.save()
+    print(f"OAuth callback address: {config.redirect_uri()}")
+    if value.startswith("https://"):
+        print(f"Point the tunnel at http://127.0.0.1:{config.oauth_callback_port}")
+
+
 def cmd_connect_finish(args: argparse.Namespace) -> None:
     config = DevConfig.load()
     svc = _connectors(config)
@@ -321,7 +333,7 @@ def _connect_mcp_oauth(args: argparse.Namespace, config: DevConfig) -> None:
     import threading
     import webbrowser
 
-    from .connectors.oauth_callback import CallbackServer, redirect_uri
+    from .connectors.oauth_callback import CallbackServer
 
     svc = _connectors(config)
     done = threading.Event()
@@ -340,7 +352,7 @@ def _connect_mcp_oauth(args: argparse.Namespace, config: DevConfig) -> None:
             args.name,
             url=args.url,
             description=args.description,
-            redirect_uri=redirect_uri(config.oauth_callback_port),
+            redirect_uri=config.redirect_uri(),
             visibility=args.visibility,
             visible_roles=args.role,
             client_id=args.client_id,
@@ -512,6 +524,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_user.add_argument("--name", required=True)
     add_user.add_argument("--role", action="append", help="role key, e.g. developer, member")
     add_user.set_defaults(func=cmd_dev_add_user)
+    redirect = dev.add_parser(
+        "oauth-redirect", help="how the OAuth callback address is written (provider quirks)"
+    )
+    redirect.add_argument("value", help="127.0.0.1 (default), localhost, or https://<tunnel>")
+    redirect.set_defaults(func=cmd_dev_oauth_redirect)
 
     sub.add_parser("status", help="show tenant, packages, and pending approvals").set_defaults(
         func=cmd_status

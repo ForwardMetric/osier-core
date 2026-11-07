@@ -611,7 +611,7 @@ def build_server(
         visibility: Literal["private", "roles", "organization"] = "organization",
         visible_roles: list[str] | None = None,
     ) -> dict[str, Any]:
-        from .connectors.oauth_callback import CallbackServer, redirect_uri
+        from .connectors.oauth_callback import CallbackServer
 
         if "server" not in callback_server:
             server_ = CallbackServer(config.oauth_callback_port, config.complete_oauth)
@@ -624,7 +624,7 @@ def build_server(
             name,
             url=url,
             description=description,
-            redirect_uri=redirect_uri(config.oauth_callback_port),
+            redirect_uri=config.redirect_uri(),
             visibility=visibility,
             visible_roles=visible_roles,
         )
