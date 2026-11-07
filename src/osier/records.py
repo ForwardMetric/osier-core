@@ -19,7 +19,7 @@ from psycopg import errors as pg_errors
 from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic import ValidationError as PydanticValidationError
 
 from .context import Principal, Tenant
@@ -509,6 +509,42 @@ class RecordService:
             )
         return self._output(obj, row)
 
+    def query(self, query: Any) -> dict[str, Any]:
+        """Run a structured query (see ``osier.query``). Returns records plus paging info."""
+        from .query import compile_query, parse_query
+
+        q = parse_query(query)
+        snapshot = self._registry.snapshot()
+        obj, statement, params = compile_query(snapshot, q)
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            rows = cur.execute(statement, params).fetchall()
+        has_more = len(rows) > q.limit
+        rows = rows[: q.limit]
+        records = [self._output(obj, r) for r in rows]
+        for name in q.expand:
+            f = obj.active_fields[name]
+            target = snapshot.objects_by_id[f.target_object_id]  # type: ignore[index]
+            ids = list({r[name] for r in rows if r[name] is not None})
+            related: dict[Any, dict[str, Any]] = {}
+            if ids:
+                with self._conn.cursor(row_factory=dict_row) as cur:
+                    for t in cur.execute(
+                        sql.SQL("SELECT * FROM {} WHERE id = ANY(%s)").format(
+                            snapshot.table(target)
+                        ),
+                        (ids,),
+                    ).fetchall():
+                        related[t["id"]] = self._output(target, t)
+            for record, row in zip(records, rows, strict=True):
+                record.setdefault("expanded", {})[name] = related.get(row[name])
+        return {
+            "object": obj.api_name,
+            "records": records,
+            "count": len(records),
+            "offset": q.offset,
+            "has_more": has_more,
+        }
+
     def list(
         self,
         object: str,
@@ -517,47 +553,22 @@ class RecordService:
         limit: int = 50,
         include_retired: bool = False,
     ) -> list[dict[str, Any]]:
-        """Simple equality filtering. The full structured query language comes in M2."""
-        snapshot = self._registry.snapshot()
-        obj = snapshot.get_object(object)
-        if not 1 <= limit <= MAX_LIST_LIMIT:
-            raise RecordValidationError(
-                f"limit must be between 1 and {MAX_LIST_LIMIT}.", field="limit"
-            )
-        conditions: list[sql.Composable] = []
-        params: list[Any] = []
-        for name, value in (where or {}).items():
-            if name == "id" or name == "owner_id":
-                python_type: Any = uuid.UUID
-            else:
-                f = obj.active_fields.get(name)
-                if f is None:
-                    raise RecordValidationError(
-                        f"Unknown field {name!r}.",
-                        code="UNKNOWN_FIELD",
-                        field=name,
-                        expected=sorted(obj.active_fields),
-                    )
-                python_type = REGISTRY[f.type].python_type(f.options)
-            if value is None:
-                conditions.append(sql.SQL("{} IS NULL").format(sql.Identifier(name)))
-                continue
-            try:
-                params.append(TypeAdapter(python_type).validate_python(value))
-            except PydanticValidationError:
-                raise RecordValidationError(
-                    f"Invalid filter value for {name!r}.", code="INVALID_VALUE", field=name
-                ) from None
-            conditions.append(sql.SQL("{} = %s").format(sql.Identifier(name)))
-        if not include_retired:
-            conditions.append(sql.SQL("retired_at IS NULL"))
-        query = sql.SQL("SELECT * FROM {}").format(snapshot.table(obj))
-        if conditions:
-            query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions)
-        query += sql.SQL(" ORDER BY created_at, id LIMIT {}").format(sql.Literal(limit))
-        with self._conn.cursor(row_factory=dict_row) as cur:
-            rows = cur.execute(query, params).fetchall()
-        return [self._output(obj, r) for r in rows]
+        """Equality filters only; a convenience wrapper around ``query``."""
+        filters = [
+            {"field": k, "op": "is_null", "value": True}
+            if v is None
+            else {"field": k, "op": "eq", "value": v}
+            for k, v in (where or {}).items()
+        ]
+        result = self.query(
+            {
+                "object": object,
+                "filters": filters,
+                "limit": limit,
+                "include_retired": include_retired,
+            }
+        )
+        return result["records"]
 
     def update(
         self,
