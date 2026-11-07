@@ -39,6 +39,10 @@ packages = ["src/osier"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = [
+    # LiteLLM's own TypedDicts under Pydantic; not ours to fix.
+    "ignore:Items .* are using the `ReadOnly` qualifier:UserWarning",
+]
 
 [tool.ruff]
 line-length = 100

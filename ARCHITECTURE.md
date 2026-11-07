@@ -1044,6 +1044,22 @@ including Claude's, can be imported.
 - Decimal fields arrive as text (stored exactly), so arithmetic needs `double(...)`;
   this loses exactness for money. A decimal-safe option is not built.
 
+### 12.5d Test mode (built)
+
+- `WorkflowService.test` (`test_workflow` tool, `osier workflows test`) runs a saved
+  workflow or an **unsaved** definition with sample inputs. Record, data, and condition
+  steps run for real inside a database transaction that is rolled back, so validation,
+  lookups and uniqueness behave as in a real run while nothing is kept and no triggers
+  fire. Checkpoints use an in-memory saver. Connected-app steps are previewed only
+  (summary, whether approval would be needed). Approvals are simulated (`approve`).
+  AI steps return `ai_outputs[step]` (validated against the declared output) or a
+  placeholder; `real_ai` calls the models (the user confirms in chat), and their token
+  usage is recorded after the rollback so test spend is not hidden.
+- Testing an unsaved definition needs `workflows.manage` (it runs `preview`); testing a
+  saved workflow needs only `records.use`.
+- Limits: a test with real AI calls holds its transaction open while models answer;
+  records created during the test are visible to the test only.
+
 ### 12.6 Tools per tenant (planned)
 
 Tenants already add tools by connecting MCP servers (§13.2). Next: a tenant

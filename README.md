@@ -210,6 +210,14 @@ once") or from the terminal:
 uv run osier jobs settings --set concurrency=4
 ```
 
+### Trying a workflow first
+
+Ask Claude to test a workflow (saved or still a draft) with sample inputs, or run
+`uv run osier workflows test <name-or-file> --input lead_id=<id>`. Record changes are
+rolled back, emails and app actions are only previewed, approvals are simulated
+(`--reject` to try the rejection path), and AI steps return placeholders or outputs you
+give (`--ai-outputs`); `--real-ai` calls the models and is charged.
+
 ### Connected apps in workflows
 
 A workflow step can send email (`"type": "connector", "capability": "email.send"`) or

@@ -19,6 +19,7 @@ import json
 import uuid
 from typing import Annotated, Any, TypedDict
 
+import jsonschema
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from psycopg import sql
@@ -49,6 +50,7 @@ from .spec import (
     WorkflowError,
     check,
     next_run,
+    output_schema,
     parse_definition,
     resolve,
     validate_definition,
@@ -755,29 +757,90 @@ class WorkflowService:
             )
             self._event(run_id, waiting["step"], "waiting", waiting)
             return self.get_run(run_id)
-        rejected = any(
-            (
-                isinstance(s, Approval)
-                and s.on_reject is None
-                and steps.get(s.id, {}).get("approved") is False
-            )
-            or (isinstance(s, ConnectorStep) and steps.get(s.id, {}).get("status") == "rejected")
-            for s in definition.steps
-        )
-        output = next(
-            (
-                steps[s.id]["output"]
-                for s in reversed(definition.steps)
-                if isinstance(s, Finish) and s.id in steps
-            ),
-            None,
-        )
-        status = "rejected" if rejected else "succeeded"
+        status, output = _outcome(definition, steps)
         self._finish(run_id, status, steps=steps, output=output)
         self._event(run_id, None, status, {})
         return self.get_run(run_id)
 
-    def _compile(self, definition: Definition, run_id: uuid.UUID) -> Any:
+    # ---- test mode ------------------------------------------------------------------
+
+    def test(
+        self,
+        workflow: str | dict[str, Any],
+        inputs: dict[str, Any] | None = None,
+        *,
+        approve: bool = True,
+        ai_outputs: dict[str, dict[str, Any]] | None = None,
+        real_ai: bool = False,
+    ) -> dict[str, Any]:
+        """Try a saved workflow (by name) or an unsaved definition with sample inputs.
+
+        Record steps run for real inside a transaction that is rolled back, so validation
+        behaves as in a real run but nothing is kept and no triggers fire. Connected-app
+        steps are only previewed. Approvals are simulated (``approve``). AI steps return
+        ``ai_outputs`` for their step, or a placeholder; with ``real_ai`` they call the
+        model (this costs money; usage is still recorded)."""
+        if isinstance(workflow, str):
+            self._authz.require("records.use", "testing workflows")
+            row = self._row(workflow)
+            definition = self._definition(row["id"], row["version"])
+        else:
+            definition = parse_definition(self.preview(workflow)["definition"])
+        checked = self._check_inputs(definition, inputs or {})
+        mode = _TestMode(approve=approve, ai_outputs=ai_outputs or {}, real_ai=real_ai)
+        for step_id, output in mode.ai_outputs.items():
+            step = next((s for s in definition.steps if s.id == step_id), None)
+            if not isinstance(step, AgentStep):
+                raise WorkflowError(
+                    f"ai_outputs: {step_id!r} is not an AI step.", field="ai_outputs"
+                )
+            try:
+                jsonschema.validate(output, output_schema(step))
+            except jsonschema.ValidationError as exc:
+                raise WorkflowError(
+                    f"ai_outputs.{step_id}: {exc.message}", field="ai_outputs"
+                ) from None
+        run_id = uuid.uuid4()
+        graph = self._compile(definition, run_id, test=mode)
+        config = {"configurable": {"thread_id": str(run_id)}}
+        result: dict[str, Any] = {}
+        try:
+            with self._conn.transaction():
+                try:
+                    graph.invoke({"inputs": checked, "steps": {}}, config)
+                    steps = graph.get_state(config).values.get("steps", {})
+                    status, output = _outcome(definition, steps)
+                    result = {"status": status, "steps": steps, "output": output, "error": None}
+                except _StepFailed as failed:
+                    steps = graph.get_state(config).values.get("steps", {})
+                    result = {
+                        "status": "failed",
+                        "steps": steps,
+                        "output": None,
+                        "error": {"step": failed.step_id, **failed.error.to_dict()},
+                    }
+                raise _Rollback
+        except _Rollback:
+            pass
+        if mode.usage:
+            from ..ai import AIService
+
+            AIService(self._session).insert_usage(mode.usage)
+        return _plain(
+            {
+                **result,
+                "trace": mode.trace,
+                "test": True,
+                "note": "Test run: nothing was saved or sent. Record changes were rolled "
+                "back; connected-app actions were previewed; approvals were simulated as "
+                + ("approved." if approve else "rejected.")
+                + (" AI steps called the model." if real_ai else " AI steps were simulated."),
+            }
+        )
+
+    def _compile(
+        self, definition: Definition, run_id: uuid.UUID, test: _TestMode | None = None
+    ) -> Any:
         graph = StateGraph(RunState)
         steps = definition.steps
 
@@ -789,7 +852,7 @@ class WorkflowService:
             return steps[index + 1].id if index + 1 < len(steps) else END
 
         for i, step in enumerate(steps):
-            graph.add_node(step.id, self._node(step, run_id))
+            graph.add_node(step.id, self._node(step, run_id, test))
             if isinstance(step, Condition):
                 then, other = target(step.then, i), target(step.else_, i)
                 graph.add_conditional_edges(
@@ -823,9 +886,13 @@ class WorkflowService:
             else:
                 graph.add_edge(step.id, target(step.next, i))
         graph.add_edge(START, steps[0].id)
+        if test is not None:
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            return graph.compile(checkpointer=InMemorySaver())  # test runs keep no state
         return graph.compile(checkpointer=TenantCheckpointSaver(self._conn))
 
-    def _node(self, step: Any, run_id: uuid.UUID) -> Any:
+    def _node(self, step: Any, run_id: uuid.UUID, test: _TestMode | None = None) -> Any:
         # Changes made by workflow steps are marked as such and never fire triggers.
         step_session = self._session.as_principal(
             dataclasses.replace(self._principal, source="workflow")
@@ -835,6 +902,13 @@ class WorkflowService:
 
         def run(state: RunState) -> dict[str, Any]:
             context = {"inputs": state["inputs"], "steps": state["steps"]}
+            if test is not None:
+                simulated = _simulate(step, context, step_session, test)
+                test.trace.append(
+                    {"step": step.id, "type": step.type, "simulated": simulated is not None}
+                )
+                if simulated is not None:
+                    return {"steps": {step.id: _plain(simulated)}}
             if isinstance(step, Approval):
                 decision = interrupt(
                     {
@@ -848,7 +922,13 @@ class WorkflowService:
                 if isinstance(step, AgentStep):
                     from .agent_step import run_agent_step
 
-                    result = run_agent_step(step, context, step_session, run_id)
+                    result = run_agent_step(
+                        step,
+                        context,
+                        step_session,
+                        run_id,
+                        usage_sink=test.usage if test else None,
+                    )
                 elif isinstance(step, ConnectorStep):
                     result = _run_connector(step, context, step_session, run_id)
                 else:
@@ -922,6 +1002,93 @@ class WorkflowService:
         if isinstance(step, Finish):
             return {"output": resolve(step.output, context)}
         raise WorkflowError(f"Unsupported step type {step.type!r}.")
+
+
+class _Rollback(Exception):
+    """Ends a test run's transaction."""
+
+
+@dataclasses.dataclass
+class _TestMode:
+    approve: bool
+    ai_outputs: dict[str, dict[str, Any]]
+    real_ai: bool
+    trace: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    usage: list[tuple[Any, ...]] = dataclasses.field(default_factory=list)
+
+
+def _placeholder(step: AgentStep) -> dict[str, Any]:
+    defaults = {
+        "string": "(simulated)",
+        "number": 0,
+        "integer": 0,
+        "boolean": False,
+        "string_list": [],
+    }
+    return {name: (f.enum[0] if f.enum else defaults[f.type]) for name, f in step.output.items()}
+
+
+def _simulate(step: Any, context: dict[str, Any], session: Any, test: _TestMode) -> Any:
+    """The result of a step in a test run, or None to run the step for real (record,
+    data, and condition steps run inside the rolled-back transaction)."""
+    if isinstance(step, Approval):
+        return {
+            "approved": test.approve,
+            "simulated": True,
+            "message": resolve(step.message, context),
+        }
+    if isinstance(step, AgentStep) and not test.real_ai:
+        return {
+            "output": test.ai_outputs.get(step.id) or _placeholder(step),
+            "simulated": True,
+            "from": "ai_outputs" if step.id in test.ai_outputs else "placeholder",
+        }
+    if isinstance(step, ConnectorStep):
+        from .. import runtime
+
+        arguments = resolve(step.arguments, context)
+        try:
+            service = runtime.connectors(session)
+            if step.capability:
+                preview = service.preview_call(
+                    step.capability, arguments, connection=step.connection
+                )
+            else:
+                preview = service.preview_tool_call(step.connection, step.tool, arguments)
+        except OsierError as exc:
+            raise _StepFailed(step.id, exc) from None
+        rejected = preview["needs_approval"] and not test.approve
+        return {
+            "status": "rejected" if rejected else "simulated",
+            "simulated": True,
+            "summary": preview["summary"],
+            "needs_approval": preview["needs_approval"],
+            "result": None,
+            "error": None,
+            "call_id": None,
+        }
+    return None
+
+
+def _outcome(definition: Definition, steps: dict[str, Any]) -> tuple[str, Any]:
+    rejected = any(
+        (
+            isinstance(s, Approval)
+            and s.on_reject is None
+            and steps.get(s.id, {}).get("approved") is False
+        )
+        or (isinstance(s, ConnectorStep) and steps.get(s.id, {}).get("status") == "rejected")
+        for s in definition.steps
+    )
+    output = next(
+        (
+            steps[s.id]["output"]
+            for s in reversed(definition.steps)
+            if isinstance(s, Finish) and s.id in steps
+        ),
+        None,
+    )
+    return ("rejected" if rejected else "succeeded"), output
 
 
 def _run_connector(

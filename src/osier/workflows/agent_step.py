@@ -190,9 +190,14 @@ def _assistant_message(message: Any) -> dict[str, Any]:
 
 
 def run_agent_step(
-    step: AgentStep, context: dict[str, Any], session: Any, run_id: Any
+    step: AgentStep,
+    context: dict[str, Any],
+    session: Any,
+    run_id: Any,
+    *,
+    usage_sink: list[Any] | None = None,
 ) -> dict[str, Any]:
-    ai = AIService(session)
+    ai = AIService(session, usage_sink=usage_sink)
     resolved = ai.resolve(step.model)
     profile = resolved["profile"]
     completion = ai.completion()

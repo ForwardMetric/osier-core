@@ -603,6 +603,26 @@ def _worker(config: DevConfig) -> Any:
     return Worker(backend, lambda: [config.tenant], config.connect)
 
 
+def cmd_workflows_test(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    inputs: dict[str, Any] = json.loads(args.inputs_json) if args.inputs_json else {}
+    for pair in args.input or []:
+        key, _, value = pair.partition("=")
+        inputs[key] = value
+    target: Any = args.workflow
+    if Path(args.workflow).exists():
+        target = _load_definition(args.workflow)
+    ai_outputs = json.loads(args.ai_outputs) if args.ai_outputs else None
+    if args.real_ai and not _confirm("Call the AI models for real (this is charged)?", args.yes):
+        return
+    _print(
+        _admin(DevConfig.load()).workflows.test(
+            target, inputs, approve=not args.reject, ai_outputs=ai_outputs, real_ai=args.real_ai
+        )
+    )
+
+
 def cmd_worker(args: argparse.Namespace) -> None:
     import asyncio
     import logging
@@ -998,6 +1018,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--inputs-json", help="all inputs as a JSON object")
     p.add_argument("--background", action="store_true", help="run it in the worker")
     p.set_defaults(func=cmd_workflows_start)
+    p = wf.add_parser("test", help="try a workflow (name or definition file); nothing is kept")
+    p.add_argument("workflow")
+    p.add_argument("--input", action="append", help="KEY=VALUE (repeatable)")
+    p.add_argument("--inputs-json")
+    p.add_argument("--reject", action="store_true", help="simulate rejecting approvals")
+    p.add_argument("--ai-outputs", help='JSON, e.g. {"assess": {"decision": "drop"}}')
+    p.add_argument("--real-ai", action="store_true", help="call AI models for real (charged)")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.set_defaults(func=cmd_workflows_test)
     p = wf.add_parser("runs", help="recent runs")
     p.add_argument("--status")
     p.add_argument("--limit", type=int, default=20)

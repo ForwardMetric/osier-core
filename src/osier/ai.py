@@ -119,7 +119,10 @@ def _validation(exc: PydanticValidationError, code: str) -> RecordValidationErro
 
 
 class AIService:
-    def __init__(self, session: Any, broker: Any = None) -> None:
+    def __init__(
+        self, session: Any, broker: Any = None, usage_sink: list[Any] | None = None
+    ) -> None:
+        self._usage_sink = usage_sink  # test runs keep usage outside their rolled-back work
         self._session = session
         self._conn = session.conn
         self._broker = broker
@@ -510,20 +513,29 @@ class AIService:
             "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         }
         cost = self.cost(resolved, response, used["input_tokens"], used["output_tokens"])
-        self._conn.execute(
-            sql.SQL(
-                "INSERT INTO {} (run_id, step_id, connection_id, profile, model, input_tokens, "
-                "output_tokens, cost_usd) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-            ).format(self._usage),
-            (
-                run_id,
-                step_id,
-                resolved["connection_id"],
-                resolved["profile"]["name"],
-                resolved["profile"]["model"],
-                used["input_tokens"],
-                used["output_tokens"],
-                cost,
-            ),
+        row = (
+            run_id,
+            step_id,
+            resolved["connection_id"],
+            resolved["profile"]["name"],
+            resolved["profile"]["model"],
+            used["input_tokens"],
+            used["output_tokens"],
+            cost,
         )
+        if self._usage_sink is not None:
+            self._usage_sink.append(row)
+        else:
+            self.insert_usage([row])
         return {**used, "cost_usd": cost}
+
+    def insert_usage(self, rows: list[tuple[Any, ...]]) -> None:
+        for row in rows:
+            self._conn.execute(
+                sql.SQL(
+                    "INSERT INTO {} (run_id, step_id, connection_id, profile, model, "
+                    "input_tokens, output_tokens, cost_usd) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                ).format(self._usage),
+                row,
+            )

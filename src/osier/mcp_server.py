@@ -808,6 +808,50 @@ def build_server(
     ) -> dict[str, Any]:
         return sessions.agent().workflows.start(name, inputs or {}, background=background)
 
+    def confirm_real_ai(
+        ctx: Context,
+        workflow: str | dict[str, Any],
+        inputs: dict[str, Any] | None = None,
+        approve: bool = True,
+        ai_outputs: dict[str, dict[str, Any]] | None = None,
+        real_ai: bool = False,
+    ) -> Elicit[Confirm] | None:
+        if not real_ai or not _can_prompt(ctx):
+            return None
+        return Elicit(
+            "Run this test with real AI calls? It uses (and is charged to) the organization's "
+            "AI connections. Nothing else is saved or sent.",
+            Confirm,
+        )
+
+    @server.tool(
+        description="Try a workflow before relying on it: a saved workflow's name, or an "
+        "unsaved definition (same format as save_workflow), with sample inputs. Nothing is "
+        "saved or sent: record changes are rolled back, connected-app actions are only "
+        "previewed, approvals are simulated (approve=true/false), AI steps return "
+        "ai_outputs[step_id] or a placeholder. real_ai=true calls the models for real (costs "
+        "money; the user confirms). Use it after drafting a workflow and before save_workflow.",
+        annotations=READ,
+    )
+    @_tool_errors
+    def test_workflow(
+        workflow: str | dict[str, Any],
+        inputs: dict[str, Any] | None = None,
+        approve: bool = True,
+        ai_outputs: dict[str, dict[str, Any]] | None = None,
+        real_ai: bool = False,
+        decision: Annotated[Confirm | None, Resolve(confirm_real_ai)] = None,
+    ) -> dict[str, Any]:
+        if real_ai and not _approved(decision):
+            raise OsierError(
+                "Real AI calls in a test were not confirmed by the user.",
+                code="CONFIRMATION_DECLINED" if decision else "CONFIRMATION_UNAVAILABLE",
+                hint="Run the test without real_ai, or give ai_outputs for the AI steps.",
+            )
+        return sessions.agent().workflows.test(
+            workflow, inputs or {}, approve=approve, ai_outputs=ai_outputs, real_ai=real_ai
+        )
+
     @server.tool(description="A workflow run: status, step results, output.", annotations=READ)
     @_tool_errors
     def get_workflow_run(run_id: str) -> dict[str, Any]:

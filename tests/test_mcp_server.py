@@ -567,3 +567,17 @@ def test_ai_status_and_profiles_in_chat(server, config, conn):
     status = call(server, "get_ai_status")
     assert status["connections"][0]["api_key_configured"] is True
     assert "sk-secret" not in json.dumps(status)
+
+
+def test_test_workflow_in_chat(server):
+    from test_workflows import QUALIFY
+
+    lead = call(server, "create_record", object="lead", values={"family_name": "Doe"})
+    result = call(server, "test_workflow", workflow=QUALIFY, inputs={"lead_id": lead["id"]})
+    assert result["test"] and result["status"] == "succeeded"
+    assert call(server, "list_workflows")["count"] == 0
+    assert call(server, "get_record", object="lead", record_id=lead["id"])["status"] == "new"
+    refused = call(
+        server, "test_workflow", workflow=QUALIFY, inputs={"lead_id": lead["id"]}, real_ai=True
+    )
+    assert refused["error"]["code"] == "CONFIRMATION_UNAVAILABLE"
