@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import psycopg
 
 from .context import Principal, Tenant
-from .packages import DEFAULT_PACKAGES, PackageService
+from .packages import PackageService, system_package_names
 from .session import Session
 from .tenant import provision_tenant
 
@@ -36,7 +36,8 @@ def bootstrap_tenant(
     tenant = provision_tenant(conn, tenant_id)
     system = Session(conn, tenant, Principal.system(source="bootstrap"))
     packages = PackageService(system)
-    proposal = packages.propose_install(list(DEFAULT_PACKAGES))
+    # Initial install phase: every system package, dependencies first.
+    proposal = packages.propose_install(system_package_names())
     packages.apply(proposal.id, diff_hash=proposal.diff_hash)
 
     org = system.records.create(

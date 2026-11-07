@@ -71,9 +71,13 @@ class ObjectDef:
     package: str | None = None
 
     @property
-    def protected(self) -> bool:
-        """Security-sensitive objects (users, roles): agents may not write them."""
-        return bool(self.options.get("protected"))
+    def access(self) -> str:
+        """open | protected (people only) | engine_managed (owning engine service only)."""
+        return str(self.options.get("access", "open"))
+
+    @property
+    def managed_by(self) -> str | None:
+        return self.options.get("managed_by")
 
     @cached_property
     def unique_together(self) -> list[list[FieldDef]]:
@@ -170,7 +174,8 @@ class SchemaSnapshot:
                     "package": obj.package,
                     "description": obj.description,
                     "semantic_ref": obj.semantic_ref,
-                    "protected": obj.protected,
+                    "access": obj.access,
+                    "managed_by": obj.managed_by,
                     "unique_together": [
                         [f.api_name for f in combo] for combo in obj.unique_together
                     ],

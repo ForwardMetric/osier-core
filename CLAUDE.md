@@ -55,4 +55,8 @@ uv run ruff check . && uv run ruff format --check .
     matching term exists. Never invent ontology URIs.
 11. **Packages are metadata only.** Standard objects are added or changed by
     editing a package in `src/osier/packages/` and bumping its version, never by
-    hand-written change sets.
+    hand-written change sets. Keep version changes **additive** (new objects,
+    fields, picklist values, doc changes); anything else is refused by the upgrade
+    engine (`PACKAGE_UPGRADE_UNSAFE`). New fields on existing objects need a
+    default if they are required. System packages may depend only on system
+    packages.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
@@ -74,7 +75,8 @@ class CreateObject(_Op):
     semantic_ref: str | None = None
     fields: list[FieldSpec] = Field(default_factory=list)
     unique_together: list[list[str]] = Field(default_factory=list)
-    protected: bool = False  # security-sensitive; only platform packages may set this
+    access: Literal["open", "protected", "engine_managed"] = "open"
+    managed_by: str | None = None  # engine service that owns engine_managed objects
 
 
 class UpdateObject(_Op):
@@ -125,6 +127,15 @@ class RegisterPackage(_Op):
     version: int
 
 
+class UpgradePackage(_Op):
+    """Internal: records a package upgrade. Only valid in package change sets."""
+
+    op: Literal["upgrade_package"]
+    package: str
+    from_version: int
+    to_version: int
+
+
 class UnregisterPackage(_Op):
     """Internal: records a package uninstallation. Only valid in package change sets."""
 
@@ -140,6 +151,7 @@ Operation = Annotated[
     | UpdateField
     | RetireField
     | RegisterPackage
+    | UpgradePackage
     | UnregisterPackage,
     Field(discriminator="op"),
 ]
@@ -550,12 +562,19 @@ class _Planner:
             op.description, label=op.label, api_name=name, kind="object", where=where
         )
         semantic_ref = design.check_semantic_ref(op.semantic_ref, where=where)
-        if op.protected and self.source != "package":
+        if op.access != "open" and self.source != "package":
             raise SchemaChangeError(
-                f"{where}: only platform packages can create protected objects.",
+                f"{where}: only platform packages can create {op.access} objects.",
                 code="NOT_ALLOWED",
-                field="protected",
+                field="access",
             )
+        if (op.access == "engine_managed") != (op.managed_by is not None):
+            raise SchemaChangeError(
+                f"{where}: engine_managed objects need managed_by, and only they may set it.",
+                field="managed_by",
+            )
+        if op.managed_by is not None and not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", op.managed_by):
+            raise SchemaChangeError(f"{where}: invalid managed_by {op.managed_by!r}.")
         if self.source == "package" and self.current_package is None:
             raise SchemaChangeError(f"{where}: package objects must follow register_package.")
         obj = _WObject(
@@ -618,7 +637,9 @@ class _Planner:
                     sql.SQL(", ").join(sql.Identifier(c) for c in combo),
                 )
             )
-        obj.options = {"unique_together": unique_sets, "protected": op.protected}
+        obj.options = {"unique_together": unique_sets, "access": op.access}
+        if op.managed_by:
+            obj.options["managed_by"] = op.managed_by
 
         self.plan.run(
             sql.SQL("CREATE TABLE {} ({})").format(self._t(name), sql.SQL(", ").join(columns)),
@@ -714,6 +735,13 @@ class _Planner:
 
     def add_field(self, op: AddField, i: int) -> None:
         obj = self._object(op.object, i)
+        if self.tenant_change and obj.options.get("access") == "engine_managed":
+            raise SchemaChangeError(
+                f"Operation {i}: {obj.api_name!r} is managed by the platform "
+                f"({obj.options.get('managed_by')}); its records cannot be written, so custom "
+                "fields cannot be added.",
+                code="ENGINE_MANAGED_OBJECT",
+            )
         f = self._build_field(obj, op.field, i)
         obj.fields[f.api_name] = f
 
@@ -939,13 +967,15 @@ def _register_package(self: _Planner, op: RegisterPackage, i: int) -> None:
             f"Operation {i}: register_package is only valid when installing a package.",
             code="NOT_ALLOWED",
         )
+    from .packages import get_package
+
     self.current_package = op.package
     self.plan.run(
         sql.SQL(
-            "INSERT INTO {} (package, version, status, change_set_id) "
-            "VALUES (%s, %s, 'installed', %s)"
+            "INSERT INTO {} (package, version, status, change_set_id, definition) "
+            "VALUES (%s, %s, 'installed', %s, %s)"
         ).format(self._meta("meta_packages")),
-        (op.package, op.version, self.change_set_id),
+        (op.package, op.version, self.change_set_id, Jsonb(get_package(op.package).operations)),
     )
     self.plan.summary.append(f"Install package {op.package!r} (version {op.version}).")
 
@@ -966,7 +996,35 @@ def _unregister_package(self: _Planner, op: UnregisterPackage, i: int) -> None:
     self.plan.summary.append(f"Uninstall package {op.package!r} (its objects are retired).")
 
 
+def _upgrade_package(self: _Planner, op: UpgradePackage, i: int) -> None:
+    if self.source != "package":
+        raise SchemaChangeError(
+            f"Operation {i}: upgrade_package is only valid when upgrading a package.",
+            code="NOT_ALLOWED",
+        )
+    from .packages import get_package
+
+    self.current_package = op.package
+    self.plan.run(
+        sql.SQL(
+            "UPDATE {} SET version = %s, definition = %s, upgraded_at = now(), "
+            "change_set_id = %s WHERE package = %s AND version = %s AND status = 'installed'"
+        ).format(self._meta("meta_packages")),
+        (
+            op.to_version,
+            Jsonb(get_package(op.package).operations),
+            self.change_set_id,
+            op.package,
+            op.from_version,
+        ),
+    )
+    self.plan.summary.append(
+        f"Upgrade package {op.package!r} from version {op.from_version} to {op.to_version}."
+    )
+
+
 _Planner.register_package = _register_package  # type: ignore[attr-defined]
+_Planner.upgrade_package = _upgrade_package  # type: ignore[attr-defined]
 _Planner.unregister_package = _unregister_package  # type: ignore[attr-defined]
 
 

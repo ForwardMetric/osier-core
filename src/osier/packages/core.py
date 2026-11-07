@@ -94,7 +94,7 @@ OPERATIONS = [
         "A person who can sign in and use the platform, directly or through an AI agent. "
         "Each user belongs to an organization and gets permissions through role assignments.",
         sdo="Person",
-        protected=True,
+        access="protected",
         unique_together=[["identity_provider", "identity_subject"]],
         fields=[
             field(
@@ -210,7 +210,7 @@ OPERATIONS = [
         "A named set of responsibilities, such as Administrator or Loan Officer. Permissions "
         "are granted to roles, and users receive them through role assignments.",
         sdo="Role",
-        protected=True,
+        access="protected",
         fields=[
             field(
                 "name",
@@ -253,7 +253,7 @@ OPERATIONS = [
         "Gives a user a role, optionally for a limited period. A user can hold several roles; "
         "each user-role pair appears at most once.",
         sdo="OrganizationRole",
-        protected=True,
+        access="protected",
         unique_together=[["app_user", "role"]],
         fields=[
             field(

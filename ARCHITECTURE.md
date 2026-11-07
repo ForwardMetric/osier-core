@@ -565,13 +565,21 @@ design.
 
 ### 11.2 Packages (standard objects as plugins)
 
-Standard objects ship as **packages** that tenants choose to install
-(`src/osier/packages/`). A package is metadata only — objects, fields, seed
-records; later views, workflows, permission templates — **never code**.
+Standard objects ship as **packages** (`src/osier/packages/`). A package is
+metadata only — objects, fields, seed records; later views, workflows,
+permission templates — **never code**. There are two kinds:
+
+- **System packages** are installed in the initial install phase of every
+  tenant (`bootstrap_tenant`), can never be uninstalled, may depend only on
+  other system packages, and are kept current automatically
+  (`PackageService.ensure_current`). Today: `core`; the connector foundation
+  adds `integrations` (§13).
+- **Optional packages** are chosen by the tenant and can be uninstalled:
+  `crm`, `case_management`.
 
 | Package | Depends on | Objects | Notes |
 |---|---|---|---|
-| `core` | — | organization, app_user (User), role, user_role (Role Assignment) | Installed in every tenant at bootstrap; cannot be removed. User, Role, and Role Assignment are **protected**: agents cannot write them. |
+| `core` (system) | — | organization, app_user (User), role, user_role (Role Assignment) | User, Role, and Role Assignment are **protected**: agents cannot write them. |
 | `crm` | core | account, contact, lead, opportunity, activity | schema.org Organization, Person, PostalAddress, Action where they fit. |
 | `case_management` | crm | support_case (Case), case_comment | schema.org Comment for comments. |
 
@@ -596,14 +604,55 @@ Rules:
   previously uninstalled package is not supported yet.
 - **Platform packages only.** Third-party packages are out of scope for now.
 - Package objects are standard-owned; tenants may extend them with `c__` fields.
-- **Upgrades** (a new package version) will run as change sets with
-  `source = upgrade` (§11.3).
+- **Object access levels.** Package objects declare who may write their
+  records through the records API:
 
-New tenants are created with `bootstrap_tenant`, which installs `core` and
+  | Level | Writes allowed by | Examples |
+  |---|---|---|
+  | `open` | Anyone with permission | account, support_case |
+  | `protected` | People and the platform, never agents (`AGENT_WRITE_NOT_ALLOWED`) | app_user, role, user_role |
+  | `engine_managed` | Only the engine service named in `managed_by`, through `RecordService.for_engine(...)`; read-only otherwise (`ENGINE_MANAGED_OBJECT`) | connection (§13) |
+
+  Only packages can create `protected` or `engine_managed` objects. Tenants
+  cannot add custom fields to `engine_managed` objects, since nobody could
+  write them.
+
+New tenants are created with `bootstrap_tenant`, which installs every system
+package (today `core`) and
 creates the tenant's organization, the first administrator user, and their
 admin role assignment.
 
-### 11.3 Upgrade process
+### 11.3 Package upgrades
+
+When a package version changes (edit in git, bump `VERSION`), installed
+tenants are brought forward by an upgrade change set (`upgrade_package`
+operation, `source = package`), proposed with `PackageService.propose_upgrade`
+or applied automatically by `PackageService.ensure_current`:
+
+- **Diff of versions, not of tenant state.** The definition is stored in
+  `meta_packages` at install/upgrade time; the upgrade diffs the stored old
+  definition against the new one (`src/osier/packages/upgrade.py`) and then
+  checks the tenant's current metadata.
+- **Applied automatically (additive):** new objects (created first, so new
+  lookups can target them), new fields, new picklist values, and changes to
+  labels, descriptions, semantic refs, and history tracking.
+- **Tenant customizations win.** If the tenant relabelled a standard field or
+  edited its description, the upgrade leaves it and reports a note
+  (`upgrade_notes`). Tenant `c__` fields are never touched.
+- **Refused (`PACKAGE_UPGRADE_UNSAFE`):** removed objects or fields, type
+  changes, option changes other than added picklist values, required /
+  unique / indexed / default changes, constraint or access changes. These need
+  an explicit migration plan. Nothing is changed.
+- **Normal safety still applies:** blockers (e.g. a new required field
+  without a default on a populated object), tamper check (the expected upgrade
+  operations are recomputed and must match exactly), and human approval when a
+  tenant applies it; the platform applies it automatically with the system
+  principal.
+- **Not applied:** label/description edits to existing picklist values (noted).
+- Downgrades are refused. Seed records added in a new version are created;
+  seeds that already exist are left as the tenant has them.
+
+### 11.4 Rollout across tenants
 
 1. **Pre-upgrade analysis** per tenant: name collisions, use of deprecated
    items, broken references in views and reports. Output like a compiler:
@@ -611,10 +660,10 @@ admin role assignment.
 2. **Canary tenants** first, then rolling batches.
 3. **Version policy:** no tenant more than one platform version behind.
 4. Platform migrations (engine tables) use Alembic. Standard objects are
-   upgraded through package versions (§11.4), and tenant customizations through
+   upgraded through package versions (§11.3), and tenant customizations through
    change sets; neither uses hand-written migrations.
 
-### 11.4 Package catalog in the database (planned for M5)
+### 11.5 Package catalog in the database (planned for M5)
 
 Goal: roll out new or changed **standard** objects with a database update
 instead of a code deployment. Decided:
@@ -632,7 +681,8 @@ instead of a code deployment. Decided:
   databases from the control-plane database. Instead, publishing marks a
   version pending and a materializer (woken by `LISTEN/NOTIFY` or the job
   queue) creates upgrade change sets for every tenant with that package.
-- **Upgrades are computed diffs** between the installed and the new version.
+- **Upgrades are computed diffs** between the installed and the new version
+  (already implemented against the in-code registry, §11.3).
   **Additive changes apply automatically** (new objects, new fields, new
   picklist values, label and description changes), recorded with
   `source = upgrade`. Unsafe differences (type changes, removals) are refused
@@ -811,22 +861,14 @@ credential-broker interface so a dedicated vault can replace this later
 without changing connector code. Agents, logs, and `describe_schema` never
 see secrets.
 
-### 13.6 Foundations this needs
+### 13.6 Foundations this needs (built)
 
-1. **System packages vs optional packages.** System packages (e.g. `core`, and
-   an `integrations` package holding `connection`) are installed in the initial
-   install phase, can never be uninstalled, and are upgraded automatically.
-   Optional packages (`crm`, `case_management`, …) are chosen by the tenant.
-2. **Package upgrades** (diff installed vs new version; additive changes
-   applied automatically), because engine releases will require newer system
-   package versions in every tenant.
-3. **A third protection level for objects:**
-
-   | Level | Writes through the records API | Examples |
-   |---|---|---|
-   | `open` | Anyone with permission | account, support_case |
-   | `protected` | People only, not agents | role, user_role |
-   | `engine_managed` | Nobody; only the owning engine service | connection |
+1. **System packages vs optional packages** (§11.2). The connector foundation
+   adds a system package `integrations` holding `connection`.
+2. **Package upgrades** (§11.3), because engine releases will require newer
+   system package versions in every tenant.
+3. **The `engine_managed` access level** (§11.2): `connection` is
+   `engine_managed` with `managed_by = connectors`.
 
 ### 13.7 Safety
 
@@ -883,7 +925,7 @@ the implementation is written from first principles.
 | **M2.5 — Connector foundation** | Engine tables (§13.5), credential broker with encryption, `connection` object, capability and purpose routing, action execution with policy and audit, one native connector, declarative HTTP runtime with network protections. Depends on system packages, package upgrades, and the `engine_managed` level (§13.6), which are built first. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
-| **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.4). |
+| **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
 | **M7 — Jobs & agent workflows** | Metadata-driven job types; durable agent workflows; tool trial (§12.3); MCP job tools; workflows as metadata (§12.2). |
 

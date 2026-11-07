@@ -29,7 +29,12 @@ Implemented:
   - `core` (always installed): Organization, User, Role, Role Assignment
   - `crm`: Account, Contact, Lead, Opportunity, Activity
   - `case_management`: Case, Case Comment
-- `bootstrap_tenant`: new tenant with core package, organization, and first administrator
+- System packages (installed for every tenant, not removable) and optional packages
+- Package upgrades: additive changes applied automatically, tenant customizations kept,
+  unsafe changes refused
+- Object access levels: `open`, `protected` (people only), `engine_managed` (owning
+  engine service only)
+- `bootstrap_tenant`: new tenant with all system packages, organization, and first administrator
 
 Not yet (see roadmap in ARCHITECTURE.md): MCP server, permissions, confirmation
 tokens, views, multi-database placement, reporting, jobs and workflows.

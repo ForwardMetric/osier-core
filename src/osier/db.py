@@ -132,4 +132,3 @@ class _TenantCursor:
 
     def __exit__(self, *exc: Any) -> None:
         self._cursor.close()
-

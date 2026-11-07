@@ -153,11 +153,24 @@ def _validation_error(
 
 
 class RecordService:
-    def __init__(self, conn: TenantConnection, tenant: Tenant, principal: Principal) -> None:
+    def __init__(
+        self,
+        conn: TenantConnection,
+        tenant: Tenant,
+        principal: Principal,
+        *,
+        engine_service: str | None = None,
+    ) -> None:
         self._conn = conn
         self._tenant = tenant
         self._principal = principal
+        self._engine_service = engine_service
         self._registry = MetadataRegistry(conn, tenant)
+
+    def for_engine(self, service: str) -> RecordService:
+        """A record service for an engine component (e.g. ``connectors``) that may write
+        the engine_managed objects it owns. Never handed to agents or API clients."""
+        return RecordService(self._conn, self._tenant, self._principal, engine_service=service)
 
     # ---- helpers -------------------------------------------------------------------
 
@@ -350,7 +363,16 @@ class RecordService:
             ) from None
 
     def _guard_protected(self, obj: ObjectDef) -> None:
-        if obj.protected and not (
+        if obj.access == "engine_managed":
+            if self._engine_service is None or self._engine_service != obj.managed_by:
+                raise ApprovalError(
+                    f"{obj.label} records are managed by the platform ({obj.managed_by}) and "
+                    "are read-only here.",
+                    code="ENGINE_MANAGED_OBJECT",
+                    hint=f"Use the {obj.managed_by} tools to change them.",
+                )
+            return
+        if obj.access == "protected" and not (
             self._principal.is_human or self._principal.actor_type.value == "system"
         ):
             raise ApprovalError(

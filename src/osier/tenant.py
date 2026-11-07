@@ -94,7 +94,9 @@ _ENGINE_DDL = [
         version                 integer NOT NULL,
         status                  text NOT NULL CHECK (status IN ('installed', 'uninstalled')),
         change_set_id           uuid NOT NULL,
+        definition              jsonb NOT NULL,
         installed_at            timestamptz NOT NULL DEFAULT now(),
+        upgraded_at             timestamptz,
         uninstall_change_set_id uuid,
         uninstalled_at          timestamptz
     )

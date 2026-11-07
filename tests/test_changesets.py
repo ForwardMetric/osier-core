@@ -159,9 +159,10 @@ def test_tenant_can_relabel_standard_field_and_add_picklist_value(crm):
     assert "lending" in [v["value"] for v in account.fields["industry"].options["values"]]
 
 
-def test_tenants_cannot_create_protected_objects(crm):
+@pytest.mark.parametrize("access", ["protected", "engine_managed"])
+def test_tenants_cannot_create_restricted_objects(crm, access):
     with pytest.raises(SchemaChangeError) as exc:
-        crm.schema.propose([obj("c__secret_rule", "Secret Rule", protected=True)])
+        crm.schema.propose([obj("c__secret_rule", "Secret Rule", access=access, managed_by="x")])
     assert exc.value.code == "NOT_ALLOWED"
 
 
