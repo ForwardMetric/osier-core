@@ -607,12 +607,8 @@ def cmd_worker(args: argparse.Namespace) -> None:
     import asyncio
     import logging
 
-    from . import ai
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = DevConfig.load()
-    # AI steps decrypt the tenant's connection keys.
-    ai.configure_runtime(broker=config.broker(), allow_private_network=config.allow_private_network)
     worker = _worker(config)
     if args.once:
         _print(asyncio.run(worker.run_until_idle()))
@@ -1080,11 +1076,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_runtime(config: DevConfig) -> None:
+    """Workflow steps that call connected apps or AI models (in the worker, the MCP server,
+    or `osier workflows start`) use this process's broker and network rules."""
+    from . import runtime
+    from .connectors.vault import CredentialError
+
+    try:
+        broker = config.broker()
+    except CredentialError:
+        broker = None
+    runtime.configure(
+        broker=broker,
+        allow_private_network=config.allow_private_network,
+        allow_local_processes=config.allow_local_processes,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.func is not cmd_dev_init and config_path().exists():
-            DevConfig.load().ensure_current()
+            config = DevConfig.load()
+            config.ensure_current()
+            _configure_runtime(config)
         args.func(args)
     except OsierError as exc:
         print(f"error: {exc.message}", file=sys.stderr)

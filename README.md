@@ -210,6 +210,14 @@ once") or from the terminal:
 uv run osier jobs settings --set concurrency=4
 ```
 
+### Connected apps in workflows
+
+A workflow step can send email (`"type": "connector", "capability": "email.send"`) or
+call a tool of a connected app (`"connection": "Notion", "tool": "search"`). It uses the
+permissions of whoever started the run, and the connection's tool policies: an action
+that needs approval pauses the run until someone approves it in the approval queue,
+then the worker continues the run.
+
 ### AI steps
 
 Workflows can include AI steps that use your organization's own model connections:

@@ -75,7 +75,7 @@ class Profile(BaseModel):
     description: str = Field(default="", max_length=500)
 
 
-_runtime: dict[str, Any] = {"broker": None, "completion": None, "allow_private_network": False}
+_runtime: dict[str, Any] = {"completion": None}
 
 
 def configure_runtime(
@@ -85,10 +85,24 @@ def configure_runtime(
     allow_private_network: bool | None = None,
 ) -> None:
     """Set the credential broker (and, in tests, a fake completion) for this process."""
-    _runtime["broker"] = broker
-    _runtime["completion"] = completion
+    from . import runtime
+
+    runtime.configure(broker=broker)
     if allow_private_network is not None:
-        _runtime["allow_private_network"] = allow_private_network
+        runtime.configure(allow_private_network=allow_private_network)
+    _runtime["completion"] = completion
+
+
+def _broker() -> Any:
+    from . import runtime
+
+    return runtime.get("broker")
+
+
+def _private_network_ok() -> bool:
+    from . import runtime
+
+    return bool(runtime.get("allow_private_network"))
 
 
 def _validation(exc: PydanticValidationError, code: str) -> RecordValidationError:
@@ -202,7 +216,7 @@ class AIService:
         if not api_base:
             return None
         parsed = urlparse(api_base)
-        private_ok = _runtime["allow_private_network"]
+        private_ok = _private_network_ok()
         if parsed.scheme != "https" and not (private_ok and parsed.scheme == "http"):
             raise RecordValidationError("The API base URL must use https.", field="api_base")
         from .connectors.netguard import check_destination
@@ -245,7 +259,7 @@ class AIService:
         api_base = self._check_api_base(api_base)
         ciphertext = key_id = None
         if api_key:
-            broker = self._broker or _runtime["broker"]
+            broker = self._broker or _broker()
             if broker is None:
                 raise AIError("No credential broker configured.", code="CREDENTIAL_ERROR")
             ciphertext, key_id = broker.encrypt({"api_key": api_key.strip()}), broker.key_id
@@ -418,7 +432,7 @@ class AIService:
         settings = ConnectionSettings.model_validate(row["settings"])
         api_key = None
         if row["secret_ciphertext"] is not None:
-            broker = self._broker or _runtime["broker"]
+            broker = self._broker or _broker()
             if broker is None:
                 raise AIError("No credential broker configured.", code="CREDENTIAL_ERROR")
             api_key = broker.decrypt(row["secret_ciphertext"], row["key_id"])["api_key"]

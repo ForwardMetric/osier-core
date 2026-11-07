@@ -1009,6 +1009,24 @@ including Claude's, can be imported.
   Writes made by tools are not exactly-once if a worker crashes mid-step. Not yet run
   against a live provider.
 
+### 12.5b Connected-app steps (built)
+
+- Step type `connector`: a `capability` (e.g. `email.send`, routed by purpose or a
+  named `connection`) or an MCP `connection` + `tool`, with `arguments` (references
+  allowed) and `on_failure` (`fail` or `continue`). Saving checks the capability, the
+  connection's visibility to the saver, and that the tool is pinned and not blocked.
+- It runs through `ConnectorService` as the run's principal, so permissions
+  (`actions.request`), connection visibility, per-tool policies, the approval queue and
+  audit all apply unchanged. There is one approval system: an action that needs
+  approval pauses the run (`waiting`, kind `connector_call`) and appears in the existing
+  action queue; approving or rejecting it there re-queues the run for the worker. A
+  rejected action ends the run as `rejected`.
+- Repeat-safe: each call is keyed by run and step (`idempotency_key`), so re-running the
+  node after a crash or on resume returns the same call instead of sending twice.
+- A process-wide runtime (`osier.runtime`) holds the credential broker and network
+  rules used by steps that run outside a request (worker, MCP server, CLI).
+- Resuming after an approval needs the worker (`osier worker`).
+
 ### 12.6 Tools per tenant (planned)
 
 Tenants already add tools by connecting MCP servers (§13.2). Next: a tenant

@@ -580,12 +580,20 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
         self._require_decider(self._get_call(call_id), "Approving an external action")
         row = self._decide(call_id, "running")
         self._execute(row["id"])
+        self._continue_workflow(row["id"])
         return self._call_view(self._get_call(row["id"]))
 
     def reject(self, call_id: Any) -> dict[str, Any]:
         self._require_decider(self._get_call(call_id), "Rejecting an external action")
         row = self._decide(call_id, "rejected")
+        self._continue_workflow(row["id"])
         return self._call_view(self._get_call(row["id"]))
+
+    def _continue_workflow(self, call_id: Any) -> None:
+        """A workflow run may be waiting for this action; let the worker continue it."""
+        from ..workflows.service import resume_after_connector_call
+
+        resume_after_connector_call(self._session, call_id)
 
     def _decide(self, call_id: Any, new_status: str) -> dict[str, Any]:
         with self._conn.transaction():

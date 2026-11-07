@@ -37,6 +37,7 @@ from .spec import (
     AgentStep,
     Approval,
     Condition,
+    ConnectorStep,
     CreateRecord,
     Definition,
     Finish,
@@ -174,6 +175,7 @@ class WorkflowService:
         objects = validate_definition(parsed, self._session.snapshot())
         self._check_roles(parsed)
         self._check_profiles(parsed)
+        self._check_connectors(parsed)
         with self._conn.cursor(row_factory=dict_row) as cur:
             existing = cur.execute(
                 sql.SQL("SELECT version FROM {} WHERE name = %s").format(self._t("meta_workflows")),
@@ -189,6 +191,32 @@ class WorkflowService:
             "triggers": [describe_trigger(t) for t in parsed.triggers],
             "definition": parsed.dump(),
         }
+
+    def _check_connectors(self, definition: Definition) -> None:
+        steps = [s for s in definition.steps if isinstance(s, ConnectorStep)]
+        if not steps:
+            return
+        from ..connectors import CONNECTOR_TYPES, ConnectorService
+
+        capabilities = sorted({c for t in CONNECTOR_TYPES.values() for c in t.capabilities})
+        service = ConnectorService(self._session, None)  # reads only; no secrets needed
+        for step in steps:
+            where = f"steps.{step.id}"
+            if step.capability and step.capability not in capabilities:
+                raise WorkflowError(
+                    f"{where}: unknown capability {step.capability!r}.",
+                    field=where,
+                    expected=capabilities,
+                )
+            if step.tool:
+                tools = service.list_tools(step.connection)  # raises if not visible/unknown
+                names = [t["name"] for t in tools["tools"]]
+                if step.tool not in names:
+                    raise WorkflowError(
+                        f"{where}: {step.connection!r} has no usable tool {step.tool!r}.",
+                        field=where,
+                        expected=names,
+                    )
 
     def _check_profiles(self, definition: Definition) -> None:
         wanted = {s.model for s in definition.steps if isinstance(s, AgentStep)}
@@ -576,7 +604,11 @@ class WorkflowService:
                     self._t("workflow_runs")
                 )
             ).fetchall()
-        return [self._run_out(r) for r in rows if self._may_decide(r)]
+        return [
+            self._run_out(r)
+            for r in rows
+            if (r["waiting"] or {}).get("kind") != "connector_call" and self._may_decide(r)
+        ]
 
     def decide(
         self, run_id: Any, *, approve: bool, comment: str | None = None, background: bool = False
@@ -588,6 +620,12 @@ class WorkflowService:
             raise ApprovalError(
                 f"Run {run['id']} is {run['status']}, not waiting for a decision.",
                 code="WORKFLOW_RUN_NOT_WAITING",
+            )
+        if waiting.get("kind") == "connector_call":
+            raise ApprovalError(
+                "This run is waiting for an action to be approved, not for a workflow decision.",
+                code="WORKFLOW_WAITING_ON_ACTION",
+                hint=f"Approve or reject action {waiting.get('call_id')} in the approval queue.",
             )
         if not self._principal.is_human:
             raise ApprovalError(
@@ -717,9 +755,12 @@ class WorkflowService:
             self._event(run_id, waiting["step"], "waiting", waiting)
             return self.get_run(run_id)
         rejected = any(
-            isinstance(s, Approval)
-            and s.on_reject is None
-            and steps.get(s.id, {}).get("approved") is False
+            (
+                isinstance(s, Approval)
+                and s.on_reject is None
+                and steps.get(s.id, {}).get("approved") is False
+            )
+            or (isinstance(s, ConnectorStep) and steps.get(s.id, {}).get("status") == "rejected")
             for s in definition.steps
         )
         output = next(
@@ -767,6 +808,15 @@ class WorkflowService:
                     ),
                     sorted({ok, no}),
                 )
+            elif isinstance(step, ConnectorStep):
+                ok = target(step.next, i)
+                graph.add_conditional_edges(
+                    step.id,
+                    lambda state, sid=step.id, a=ok: (
+                        END if state["steps"][sid].get("status") == "rejected" else a
+                    ),
+                    sorted({ok, END}),
+                )
             elif isinstance(step, Finish):
                 graph.add_edge(step.id, END)
             else:
@@ -798,6 +848,8 @@ class WorkflowService:
                     from .agent_step import run_agent_step
 
                     result = run_agent_step(step, context, step_session, run_id)
+                elif isinstance(step, ConnectorStep):
+                    result = _run_connector(step, context, step_session, run_id)
                 else:
                     result = self._run_step(step, context, records, provenance, run_id)
             except OsierError as exc:
@@ -851,6 +903,70 @@ class WorkflowService:
         raise WorkflowError(f"Unsupported step type {step.type!r}.")
 
 
+def _run_connector(
+    step: ConnectorStep, context: dict[str, Any], session: Any, run_id: Any
+) -> dict[str, Any]:
+    """Call a connected app. Repeat-safe: the call is keyed by run and step, so running
+    the node again (after a crash, or when resuming) returns the same call."""
+    from .. import runtime
+
+    service = runtime.connectors(session)
+    arguments = resolve(step.arguments, context)
+    key = f"workflow:{run_id}:{step.id}"
+    if step.capability:
+        call = service.call(
+            step.capability,
+            arguments,
+            connection=step.connection,
+            idempotency_key=key,
+            request_id=run_id,
+        )
+    else:
+        call = service.call_tool(
+            step.connection, step.tool, arguments, idempotency_key=key, request_id=run_id
+        )
+    if call["status"] == "awaiting_approval":
+        interrupt(
+            {
+                "step": step.id,
+                "kind": "connector_call",
+                "call_id": call["call_id"],
+                "message": f"Waiting for approval: {call['summary']}",
+                "approver_roles": [],
+            }
+        )
+        call = service.get_call(call["call_id"])  # resumed: the decision has been made
+    result = {
+        "call_id": call["call_id"],
+        "status": call["status"],
+        "result": call["result"],
+        "error": call["error"],
+        "summary": call["summary"],
+    }
+    if call["status"] == "failed" and step.on_failure == "fail":
+        raise OsierError(
+            f"The action failed: {call['summary']}",
+            code="CONNECTOR_CALL_FAILED",
+            details={"call_id": call["call_id"], "error": call["error"]},
+        )
+    return result
+
+
+def resume_after_connector_call(session: Any, call_id: Any) -> None:
+    """Called when a person approves or rejects an action: queue the workflow run that is
+    waiting for it, so the worker continues it."""
+    table = sql.Identifier(session.tenant.schema, "workflow_runs")
+    session.conn.execute(
+        sql.SQL(
+            "UPDATE {} SET status = 'queued', waiting = NULL, deferred_at = NULL, "
+            "resume_with = %s, updated_at = now() "
+            "WHERE status = 'waiting' AND waiting ->> 'kind' = 'connector_call' "
+            "AND waiting ->> 'call_id' = %s"
+        ).format(table),
+        (Jsonb({"call_id": str(call_id)}), str(call_id)),
+    )
+
+
 def has_ai_steps(definition: Definition) -> bool:
     return any(isinstance(s, AgentStep) for s in definition.steps)
 
@@ -872,6 +988,16 @@ def describe_trigger(trigger: Any) -> str:
 
 def describe_step(step: Any) -> str:
     """One line per step, for confirmation prompts."""
+    if isinstance(step, ConnectorStep):
+        what = (
+            f"use {step.capability}" + (f" via {step.connection}" if step.connection else "")
+            if step.capability
+            else f"call {step.connection} tool {step.tool!r}"
+        )
+        return (
+            f"{step.id}: {what} (with the run's permissions; actions that need "
+            "approval wait for a person)"
+        )
     if isinstance(step, AgentStep):
         tools = (
             f"may {', '.join(step.tools)} on {', '.join(step.objects)}"

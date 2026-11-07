@@ -122,6 +122,22 @@ class Finish(_Step):
     output: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConnectorStep(_Step):
+    """Use a connected app: a capability such as ``email.send`` (routed to a connection by
+    purpose, or the named ``connection``), or a tool of a connected MCP server
+    (``connection`` + ``tool``). Runs with the run's permissions through the connector
+    service, so tool policies apply: an action that needs approval pauses the run until
+    a person approves it in the approval queue. Rejected actions end the run as
+    rejected; failed ones fail the step unless ``on_failure`` is ``continue``."""
+
+    type: Literal["connector"]
+    capability: str | None = Field(default=None, max_length=100)
+    connection: str | None = Field(default=None, max_length=200)
+    tool: str | None = Field(default=None, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    on_failure: Literal["fail", "continue"] = "fail"
+
+
 AGENT_TOOLS = ("get_record", "query_records", "create_record", "update_record")
 
 
@@ -164,7 +180,8 @@ Step = Annotated[
     | Condition
     | Approval
     | Finish
-    | AgentStep,
+    | AgentStep
+    | ConnectorStep,
     Field(discriminator="type"),
 ]
 STEP_TYPES = [
@@ -176,6 +193,7 @@ STEP_TYPES = [
     "approval",
     "finish",
     "agent",
+    "connector",
 ]
 
 
@@ -372,6 +390,16 @@ def validate_definition(definition: Definition, snapshot: SchemaSnapshot) -> lis
 
         if isinstance(step, AgentStep):
             objects |= _validate_agent(step, where, snapshot)
+            continue
+        if isinstance(step, ConnectorStep):
+            if bool(step.capability) == bool(step.tool):
+                raise WorkflowError(
+                    f"{where}: give either 'capability' (e.g. email.send) or 'connection' "
+                    "and 'tool'.",
+                    field=where,
+                )
+            if step.tool and not step.connection:
+                raise WorkflowError(f"{where}: 'tool' needs 'connection'.", field=where)
             continue
         object_name = getattr(step, "object", None)
         if isinstance(step, QueryRecords):
