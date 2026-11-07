@@ -1,13 +1,15 @@
 """The tenant's AI model connections, model profiles, limits, and usage.
 
-Models are reached through LiteLLM (MIT), so any provider it supports works:
-Anthropic, OpenAI, OpenRouter, Azure, Groq, a self-hosted OpenAI-compatible server,
-and more.
+Models are reached through the OpenAI-compatible Chat Completions API, with the
+official ``openai`` SDK: OpenAI itself, OpenRouter (which fronts hundreds of models
+from many providers), or any other OpenAI-compatible endpoint (vLLM, Ollama, Groq,
+...) given an ``api_base``.
 
-- **AI connections**: several per tenant. Each has a LiteLLM provider, an optional API
-  base URL, the models it may use, an encrypted API key (entered by a person through
-  the CLI, never returned by any tool, record, or log), optional prices, and monthly
-  limits (tokens, and dollars when prices are known).
+- **AI connections**: several per tenant. Each has a provider (``openai``,
+  ``openrouter``, or ``compatible``), an API base URL where needed, the models it may
+  use, an encrypted API key (entered by a person through the CLI, never returned by
+  any tool, record, or log), optional prices, and monthly limits (tokens, and dollars
+  when the cost is known: from the connection's prices, or reported by OpenRouter).
 - **Model profiles**: named choices such as ``fast`` or ``careful`` that map to a
   connection and model. AI steps name a profile (or use the default), so the model
   behind a profile can change without editing workflows.
@@ -19,7 +21,6 @@ and more.
 from __future__ import annotations
 
 import datetime as dt
-import os
 import re
 import uuid
 from collections.abc import Callable
@@ -42,17 +43,18 @@ class AIError(OsierError):
     default_code = "AI_ERROR"
 
 
-def _litellm() -> Any:
-    # Use LiteLLM's bundled model price list instead of downloading it on import.
-    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    import litellm
-
-    litellm.suppress_debug_info = True
-    return litellm
+# Provider -> default API base URL. ``compatible`` has none: the connection must give one.
+PROVIDERS: dict[str, str | None] = {
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "compatible": None,
+}
+# Providers whose requests are known to accept strict function schemas.
+STRICT_TOOLS = {"openai", "openrouter"}
 
 
 def known_providers() -> list[str]:
-    return sorted(str(getattr(p, "value", p)) for p in _litellm().provider_list)
+    return sorted(PROVIDERS)
 
 
 class ConnectionSettings(BaseModel):
@@ -71,26 +73,28 @@ class Profile(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     connection: str
     model: str = Field(min_length=1, max_length=200)
-    effort: Literal["low", "medium", "high"] = "medium"
+    # Sent as ``reasoning_effort`` only when set: models without reasoning reject it.
+    effort: Literal["low", "medium", "high"] | None = None
     description: str = Field(default="", max_length=500)
 
 
-_runtime: dict[str, Any] = {"completion": None}
+_runtime: dict[str, Any] = {"client_factory": None}
 
 
 def configure_runtime(
     *,
     broker: Any,
-    completion: Callable[..., Any] | None = None,
+    client_factory: Callable[[str | None, str], Any] | None = None,
     allow_private_network: bool | None = None,
 ) -> None:
-    """Set the credential broker (and, in tests, a fake completion) for this process."""
+    """Set the credential broker (and, in tests, a fake ``(api_key, base_url) -> client``
+    factory) for this process."""
     from . import runtime
 
     runtime.configure(broker=broker)
     if allow_private_network is not None:
         runtime.configure(allow_private_network=allow_private_network)
-    _runtime["completion"] = completion
+    _runtime["client_factory"] = client_factory
 
 
 def _broker() -> Any:
@@ -215,8 +219,14 @@ class AIService:
 
     # ---- connections (CLI: keys never pass through agents) ----------------------------
 
-    def _check_api_base(self, api_base: str | None) -> str | None:
+    def _check_api_base(self, provider: str, api_base: str | None) -> str | None:
         if not api_base:
+            if PROVIDERS[provider] is None:
+                raise RecordValidationError(
+                    "A 'compatible' connection needs an API base URL.",
+                    field="api_base",
+                    hint="e.g. https://llm.example.com/v1 for a self-hosted server.",
+                )
             return None
         parsed = urlparse(api_base)
         private_ok = _private_network_ok()
@@ -247,19 +257,21 @@ class AIService:
                 field="name",
                 expected="lowercase letters, digits, single hyphens",
             )
-        if provider not in known_providers():
+        if provider not in PROVIDERS:
             raise RecordValidationError(
                 f"Unknown provider {provider!r}.",
                 field="provider",
                 code="AI_PROVIDER_UNKNOWN",
-                hint="Use a LiteLLM provider name, e.g. openai, "
-                "anthropic, openrouter, azure, groq, ollama.",
+                expected=known_providers(),
+                hint="Use openrouter for models from many providers, openai for OpenAI, or "
+                "compatible (with an API base URL) for any OpenAI-compatible server.",
             )
         try:
             parsed = ConnectionSettings.model_validate({"models": models, **settings})
         except PydanticValidationError as exc:
             raise _validation(exc, "AI_SETTINGS_INVALID") from None
-        api_base = self._check_api_base(api_base)
+        api_base = self._check_api_base(provider, api_base)
+        self._check_budget_has_a_cost_source(provider, parsed)
         ciphertext = key_id = None
         if api_key:
             broker = self._broker or _broker()
@@ -309,6 +321,22 @@ class AIService:
                 )
         return next(c for c in self.connections() if c["name"] == name)
 
+    @staticmethod
+    def _check_budget_has_a_cost_source(provider: str, settings: ConnectionSettings) -> None:
+        """A dollar budget can only be enforced if we can tell what calls cost."""
+        has_prices = (
+            settings.input_usd_per_million is not None
+            and settings.output_usd_per_million is not None
+        )
+        if settings.monthly_budget_usd is not None and not (has_prices or provider == "openrouter"):
+            raise RecordValidationError(
+                "A dollar budget needs prices for this connection.",
+                code="AI_BUDGET_NEEDS_PRICES",
+                field="monthly_budget_usd",
+                hint="Set input_usd_per_million and output_usd_per_million, or limit tokens "
+                "instead. (OpenRouter reports costs itself.)",
+            )
+
     def update_connection(self, name: str, changes: dict[str, Any]) -> dict[str, Any]:
         """Change models, prices, or limits (not the key; reconnect for that)."""
         self._require_manager("changing AI connections")
@@ -317,6 +345,7 @@ class AIService:
             parsed = ConnectionSettings.model_validate({**row["settings"], **changes})
         except PydanticValidationError as exc:
             raise _validation(exc, "AI_SETTINGS_INVALID") from None
+        self._check_budget_has_a_cost_source(row["provider"], parsed)
         self._conn.execute(
             sql.SQL(
                 "UPDATE {} SET settings = %s, updated_by = %s, updated_at = now() WHERE id = %s"
@@ -439,18 +468,38 @@ class AIService:
             if broker is None:
                 raise AIError("No credential broker configured.", code="CREDENTIAL_ERROR")
             api_key = broker.decrypt(row["secret_ciphertext"], row["key_id"])["api_key"]
+        if row["provider"] not in PROVIDERS:
+            raise AIError(
+                f"AI connection {row['name']!r} uses provider {row['provider']!r}, which is "
+                "no longer supported.",
+                code="AI_NOT_CONFIGURED",
+                hint=f"Reconnect it with one of {known_providers()}.",
+            )
         return {
             "profile": profile,
             "connection_id": row["id"],
             "connection": row["name"],
             "provider": row["provider"],
-            "api_base": row["api_base"],
+            "base_url": row["api_base"] or PROVIDERS[row["provider"]],
             "api_key": api_key,
             "settings": settings,
         }
 
-    def completion(self) -> Callable[..., Any]:
-        return _runtime["completion"] or _litellm().completion
+    @staticmethod
+    def client(resolved: dict[str, Any]) -> Any:
+        """An OpenAI-SDK client for a resolved connection (a fake one in tests)."""
+        factory = _runtime["client_factory"]
+        if factory is not None:
+            return factory(resolved["api_key"], resolved["base_url"])
+        from openai import OpenAI
+
+        # Local servers (vLLM, Ollama) often need no key; the SDK insists on a non-empty one.
+        return OpenAI(
+            api_key=resolved["api_key"] or "not-needed",
+            base_url=resolved["base_url"],
+            max_retries=2,
+            timeout=600,
+        )
 
     def usage_this_month(self, connection_id: Any = None) -> dict[str, Any]:
         start = dt.datetime.now(dt.UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -491,7 +540,10 @@ class AIService:
         self, resolved: dict[str, Any], response: Any, input_tokens: int, output_tokens: int
     ) -> float | None:
         settings: ConnectionSettings = resolved["settings"]
-        if settings.input_usd_per_million is not None and settings.output_usd_per_million:
+        if (
+            settings.input_usd_per_million is not None
+            and settings.output_usd_per_million is not None
+        ):
             return float(
                 (
                     settings.input_usd_per_million * input_tokens
@@ -499,10 +551,11 @@ class AIService:
                 )
                 / 1_000_000
             )
-        try:
-            return float(_litellm().completion_cost(completion_response=response))
-        except Exception:  # noqa: BLE001 - unknown models have no price
-            return None
+        # OpenRouter reports what a call cost (in credits, which are US dollars) in usage.cost.
+        reported = getattr(getattr(response, "usage", None), "cost", None)
+        if resolved["provider"] == "openrouter" and isinstance(reported, int | float):
+            return float(reported)
+        return None  # unknown: tokens are still limited, dollars cannot be
 
     def record_usage(
         self, resolved: dict[str, Any], run_id: Any, step_id: str, response: Any

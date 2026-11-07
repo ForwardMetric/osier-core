@@ -794,7 +794,7 @@ def cmd_ai_status(args: argparse.Namespace) -> None:
         mark = " (default)" if p["default"] else ""
         print(
             f"profile    {p['name']:<16} -> {p['connection']} / {p['model']}  "
-            f"effort {p['effort']}{mark}"
+            f"effort {p['effort'] or '-'}{mark}"
         )
     if not status["connections"]:
         print("No AI connections. Add one with `osier ai connect`.")
@@ -1050,7 +1050,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--provider",
         required=True,
-        help="LiteLLM provider: openai, anthropic, openrouter, azure, groq, ...",
+        choices=["openai", "openrouter", "compatible"],
+        help="openrouter (many providers' models), openai, or compatible (any "
+        "OpenAI-compatible server; needs --api-base)",
     )
     p.add_argument("--model", action="append", required=True, help="allowed model (repeat)")
     p.add_argument("--api-base", help="base URL, e.g. for a self-hosted OpenAI-compatible server")
@@ -1073,7 +1075,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--connection")
     p.add_argument("--model")
-    p.add_argument("--effort", choices=["low", "medium", "high"], default="medium")
+    p.add_argument(
+        "--effort",
+        choices=["low", "medium", "high"],
+        help="send as reasoning_effort (only for models that support it)",
+    )
     p.add_argument("--description")
     p.add_argument("--default", action="store_true", help="use it when a step names none")
     p.add_argument("--remove", action="store_true")

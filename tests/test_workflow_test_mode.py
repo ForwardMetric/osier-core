@@ -103,7 +103,7 @@ def test_testing_unsaved_definitions_needs_workflows_manage(crm, make_user):
 
 
 def test_real_ai_in_test_mode_keeps_its_usage(crm, monkeypatch):
-    from test_ai_steps import ASSESS, FakeCompletion
+    from test_ai_steps import ASSESS, FakeClient
 
     import osier.connectors.netguard as netguard
     from osier import ai
@@ -111,14 +111,14 @@ def test_real_ai_in_test_mode_keeps_its_usage(crm, monkeypatch):
     from osier.connectors.vault import CredentialBroker
 
     broker = CredentialBroker(CredentialBroker.generate_key())
-    fake = FakeCompletion([("submit_result", {"decision": "drop", "reason": "Real."})])
-    ai.configure_runtime(broker=broker, completion=fake)
+    client = FakeClient([("submit_result", {"decision": "drop", "reason": "Real."})])
+    ai.configure_runtime(broker=broker, client_factory=lambda key, url: client)
     monkeypatch.setattr(netguard, "check_destination", lambda *a, **k: None)
     try:
         AIService(crm, broker).connect("main", provider="openai", models=["m"], api_key="k")
         AIService(crm).set_profile(name="default", connection="main", model="m", default=True)
         result = crm.workflows.test(ASSESS, {"lead_id": lead(crm)["id"]}, real_ai=True)
     finally:
-        ai.configure_runtime(broker=None, completion=None)
+        ai.configure_runtime(broker=None, client_factory=None)
     assert result["steps"]["assess"]["output"] == {"decision": "drop", "reason": "Real."}
     assert count(crm.conn._conn, crm.tenant.schema, "ai_usage") == 1  # spend is not hidden

@@ -439,7 +439,7 @@ _ENGINE_MIGRATIONS = [
         name           text PRIMARY KEY,
         connection_id  uuid NOT NULL,
         model          text NOT NULL,
-        effort         text NOT NULL,
+        effort         text,
         description    text NOT NULL DEFAULT '',
         updated_by     uuid NOT NULL,
         updated_at     timestamptz NOT NULL DEFAULT now()

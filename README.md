@@ -237,10 +237,10 @@ workflow's own data.
 ### AI steps
 
 Workflows can include AI steps that use your organization's own model connections:
-any provider LiteLLM supports (OpenAI, Anthropic, OpenRouter, Azure, Groq, a
-self-hosted OpenAI-compatible server, ...). An administrator adds connections (the key
-prompt is hidden; keys are stored encrypted and never shown again) and names model
-profiles that steps refer to:
+OpenAI, OpenRouter (one key for hundreds of models, including Claude), or any
+OpenAI-compatible server (vLLM, Ollama, Groq, ...). An administrator adds connections
+(the key prompt is hidden; keys are stored encrypted and never shown again) and names
+model profiles that steps refer to:
 
 ```bash
 uv run osier ai connect main --provider openrouter --model <model-a> --model <model-b>
@@ -251,8 +251,10 @@ uv run osier ai profile careful --connection main --model <model-a> --effort hig
 ```
 
 ```bash
-uv run osier ai profile fast --connection main --model <model-b> --effort low
+uv run osier ai profile fast --connection main --model <model-b>
 ```
+
+For a self-hosted server use `--provider compatible --api-base https://...`.
 
 An AI step names a profile (`"model": "fast"`) or uses the default. It gets
 instructions, optional skill text, the data you pass it, and only the record tools and

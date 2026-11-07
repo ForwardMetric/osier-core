@@ -1,4 +1,5 @@
-"""Run an AI step: a tool loop through LiteLLM on one of the tenant's AI connections.
+"""Run an AI step: a tool loop over the OpenAI-compatible API on one of the tenant's
+AI connections (OpenAI, OpenRouter, or another compatible endpoint).
 
 Safety model:
 - The step's tools are only the record tools its definition lists, on the objects it
@@ -11,7 +12,7 @@ Safety model:
   declared output (``jsonschema``) before later steps use it.
 - Limits: ``max_turns`` per step and the connection's monthly token and dollar caps,
   checked before every call. Every call's usage and cost (when known) is recorded.
-- Retries: rate limits, timeouts, and server errors raise (LiteLLM retries, then the
+- Retries: rate limits, timeouts, and server errors raise (the SDK retries, then the
   job retries the step); refusals, bad requests, and invalid keys fail the step.
 
 Writes made through tools are not exactly-once: if the worker crashes mid-step, the
@@ -25,7 +26,7 @@ from typing import Any
 
 import jsonschema
 
-from ..ai import AIError, AIService, _litellm
+from ..ai import STRICT_TOOLS, AIError, AIService
 from ..errors import OsierError
 from .spec import AgentStep, output_schema, resolve
 
@@ -53,7 +54,9 @@ def _function(
     return {"type": "function", "function": fn}
 
 
-def _tools(step: AgentStep, schema: dict[str, Any]) -> list[dict[str, Any]]:
+def _tools(
+    step: AgentStep, schema: dict[str, Any], *, strict: bool = False
+) -> list[dict[str, Any]]:
     objects = {"type": "string", "enum": step.objects, "description": "Object api name."}
     defs = {
         "get_record": (
@@ -101,7 +104,7 @@ def _tools(step: AgentStep, schema: dict[str, Any]) -> list[dict[str, Any]]:
             "submit_result",
             "Finish the task by submitting the result. Call it exactly once.",
             schema,
-            strict=True,
+            strict=strict,
         )
     )
     return tools
@@ -159,9 +162,15 @@ class _Tools:
 
 
 def _final_errors() -> tuple[type[Exception], ...]:
-    """LiteLLM errors that retrying will not fix."""
-    e = _litellm().exceptions
-    return (e.AuthenticationError, e.BadRequestError, e.NotFoundError, e.PermissionDeniedError)
+    """SDK errors that retrying will not fix."""
+    import openai
+
+    return (
+        openai.AuthenticationError,
+        openai.BadRequestError,
+        openai.NotFoundError,
+        openai.PermissionDeniedError,
+    )
 
 
 def _arguments(call: Any) -> dict[str, Any]:
@@ -200,7 +209,7 @@ def run_agent_step(
     ai = AIService(session, usage_sink=usage_sink)
     resolved = ai.resolve(step.model)
     profile = resolved["profile"]
-    completion = ai.completion()
+    client = ai.client(resolved)
     schema = output_schema(step)
     instructions = resolve(step.instructions, context)
     skill_text = ""
@@ -217,29 +226,24 @@ def run_agent_step(
         },
     ]
     request: dict[str, Any] = {
-        "model": f"{resolved['provider']}/{profile['model']}",
-        "tools": _tools(step, schema),
-        "max_tokens": MAX_TOKENS,
-        "reasoning_effort": step.effort or profile["effort"],
-        "drop_params": True,  # providers without an effort setting ignore it
-        "num_retries": 2,
-        "timeout": 600,
+        "model": profile["model"],
+        "tools": _tools(step, schema, strict=resolved["provider"] in STRICT_TOOLS),
+        # OpenAI's newer models only accept max_completion_tokens; other servers use max_tokens.
+        ("max_completion_tokens" if resolved["provider"] == "openai" else "max_tokens"): (
+            MAX_TOKENS
+        ),
     }
-    if resolved["api_key"]:
-        request["api_key"] = resolved["api_key"]
-    if resolved["api_base"]:
-        request["api_base"] = resolved["api_base"]
+    effort = step.effort or profile["effort"]
+    if effort:  # models without reasoning reject it, so it is only sent when asked for
+        request["reasoning_effort"] = effort
     executor = _Tools(step, session.records, run_id)
     totals: dict[str, Any] = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
     final_errors = _final_errors()
-    content_policy = _litellm().exceptions.ContentPolicyViolationError
 
     for turn in range(1, step.max_turns + 1):
         ai.check_budget(resolved)
         try:
-            response = completion(**request, messages=messages)
-        except content_policy:
-            raise AIError("The AI model declined this task.", code="AI_REFUSED") from None
+            response = client.chat.completions.create(**request, messages=messages)
         except final_errors as exc:
             raise AIError(
                 f"The AI request was rejected: {getattr(exc, 'message', exc)}",
@@ -255,9 +259,9 @@ def run_agent_step(
             else totals["cost_usd"] + used["cost_usd"]
         )
         choice = response.choices[0]
-        if choice.finish_reason == "content_filter":
-            raise AIError("The AI model declined this task.", code="AI_REFUSED")
         message = choice.message
+        if choice.finish_reason == "content_filter" or getattr(message, "refusal", None):
+            raise AIError("The AI model declined this task.", code="AI_REFUSED")
         calls = list(message.tool_calls or [])
         if choice.finish_reason == "length" and not calls:
             raise AIError("The AI response was cut off.", code="AI_OUTPUT_TRUNCATED")

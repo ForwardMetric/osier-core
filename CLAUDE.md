@@ -43,7 +43,8 @@ uv run ruff check . && uv run ruff format --check .
   `settings.py` (per-tenant settings), `runner.py` (`execute_run`, the engine entry
   point), `worker.py` (`osier worker` loop), `procrastinate_backend.py` (today's backend,
   one queue schema `j_<hex>` per tenant)
-- `src/osier/ai.py` — AI model connections (any provider via LiteLLM; encrypted keys),
+- `src/osier/ai.py` — AI model connections (OpenAI, OpenRouter, or compatible servers via
+  the `openai` SDK; encrypted keys),
   model profiles, limits, usage; `src/osier/workflows/agent_step.py` — the AI step loop
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
@@ -109,7 +110,7 @@ uv run ruff check . && uv run ruff format --check .
     schema; never read or write queue tables through `TenantConnection` or from
     another tenant's queue. Tenant job settings stay within `JobSettings` limits.
 19. **AI steps run on the tenant's connections and with the run's permissions.** Models
-    are reached only through LiteLLM (`osier.ai`), never provider SDKs directly. Tools in
+    are reached only through the OpenAI-compatible API (`osier.ai`, `openai` SDK). Tools in
     an AI step go through `RecordService` as the run principal, limited to the step's
     objects; results pass `submit_result` validation before use; connection limits are
     checked before every call. Never put model ids in code (tenants choose models in

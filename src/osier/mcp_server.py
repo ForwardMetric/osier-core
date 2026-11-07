@@ -67,8 +67,9 @@ How to work with it:
   approval. Approvals appear in list_pending_approvals. People with workflows.manage
   can define workflows (save_workflow) after confirming.
 - AI steps: workflows can include "agent" steps that use one of the organization's
-  AI model connections (any provider), chosen by a model profile in the step's
-  "model" field. get_ai_status lists connections, profiles, and usage. AI steps run in
+  AI model connections (OpenAI, OpenRouter, or any OpenAI-compatible server), chosen by
+  a model profile in the step's "model" field. get_ai_status lists connections,
+  profiles, and usage. AI steps run in
   the background worker. Keys are added by an administrator with `osier ai connect`;
   never ask the user to paste a key into the chat.
 - Users, roles, and connections are protected; you can read them but not change them.
@@ -950,7 +951,7 @@ def build_server(
         connection: str,
         model: str,
         ctx: Context,
-        effort: str = "medium",
+        effort: str | None = None,
         description: str = "",
         default: bool = False,
     ) -> Elicit[Confirm] | None:
@@ -971,7 +972,8 @@ def build_server(
         verb = "Change" if preview["action"] == "update" else "Create"
         extra = " and make it the default" if default else ""
         return Elicit(
-            f"{verb} AI model profile {name!r}: {connection} / {model}, effort {effort}{extra}? "
+            f"{verb} AI model profile {name!r}: {connection} / {model}, "
+            f"effort {effort or 'not sent'}{extra}? "
             "AI steps using this profile will use this model and its connection's tokens.",
             Confirm,
         )
@@ -987,7 +989,7 @@ def build_server(
         name: str,
         connection: str,
         model: str,
-        effort: Literal["low", "medium", "high"] = "medium",
+        effort: Literal["low", "medium", "high"] | None = None,
         description: str = "",
         default: bool = False,
         decision: Annotated[Confirm | None, Resolve(confirm_profile)] = None,

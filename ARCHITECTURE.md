@@ -963,33 +963,39 @@ including Claude's, can be imported.
 
 ### 12.5a AI steps in workflows (built)
 
-- **Any model provider, through LiteLLM** (MIT; pinned `<1.109`). osier does not call
-  provider SDKs directly. LiteLLM's bundled price list is used
-  (`LITELLM_LOCAL_MODEL_COST_MAP=True`) so importing it does not download anything; it
-  sends no telemetry by default. Cost of the choice: a heavy dependency (boto3,
-  huggingface-hub, tokenizers, aiohttp, openai) and about 6 s import time, so it is
-  imported only when an AI step runs.
-- **AI connections**, several per tenant (`ai_connections`): a LiteLLM provider
-  (openai, anthropic, openrouter, azure, groq, ollama, ...), an optional API base URL
-  (https only, private addresses refused unless local development allows them), the
-  models it may use, an encrypted key entered at a hidden CLI prompt
-  (`osier ai connect`; never returned by any tool or log), optional prices per million
-  tokens, and monthly limits: tokens, and dollars when the price is known (from the
-  connection, or LiteLLM's price list).
-- **Model profiles** (`ai_profiles`): named connection + model + effort, e.g.
+- **OpenAI-compatible API, through the official `openai` SDK** (Apache-2.0; pinned
+  `<4`). Three providers: `openai`, `openrouter` (one key for hundreds of models from
+  many providers, Claude included), and `compatible` (any OpenAI-compatible server:
+  vLLM, Ollama, Groq, ..., with its own `api_base`). We first used LiteLLM (MIT) for
+  breadth and dropped it after measuring: 232 MB / 60 packages / 8.4 s import against
+  27 MB / 14 packages / 0.9 s for the SDK. Cost of the choice: there is no native
+  Anthropic or Azure adapter; Claude is reached through OpenRouter or a compatible
+  gateway, and provider-specific features (Anthropic prompt caching, server-side
+  refusal fallbacks) are not used.
+- **AI connections**, several per tenant (`ai_connections`): a provider, an API base URL
+  (default per provider; custom ones must be https and may not point at private
+  addresses unless local development allows it), the models it may use, an encrypted
+  key entered at a hidden CLI prompt (`osier ai connect`; never returned by any tool or
+  log), optional prices per million tokens, and monthly limits: tokens always, dollars
+  only when cost is knowable. Cost comes from the connection's prices, else from
+  OpenRouter's `usage.cost` (credits, treated as US dollars; unverified for other
+  accounts' currencies); a dollar budget is refused on a connection with neither
+  (`AI_BUDGET_NEEDS_PRICES`) because it could not be enforced. Calls with unknown cost
+  still count against the token limit.
+- **Model profiles** (`ai_profiles`): named connection + model + optional effort, e.g.
   `careful`, `fast`, `private`. AI steps name a profile in `model` (or use the default
   profile), so different steps use different models and the model behind a profile can
   change without editing workflows. Profiles hold no secrets, so they can also be set
   in chat after confirmation (`set_ai_profile`). Saving a workflow checks that its
-  profiles exist.
+  profiles exist. Effort is sent as `reasoning_effort` only when a profile or step sets
+  it, because models without reasoning reject the parameter.
 - Connections and profiles need `ai.manage` (admin only by default; it controls
   spending) and a person.
 - **Step type `agent`**: `instructions` (with references), optional `skill` (its text
   is added as data), `data`, `tools` from `get_record`, `query_records`,
   `create_record`, `update_record` limited to the listed `objects`, a declared
-  `output`, `model` (profile), `max_turns` (1–20, default 6), and `effort` (sent as
-  `reasoning_effort`; dropped for providers without one).
-- **Execution:** our own tool loop over LiteLLM's OpenAI-format `completion` (not a
+  `output`, `model` (profile), `max_turns` (1–20, default 6), and `effort`.
+- **Execution:** our own tool loop over Chat Completions with tool calling (not a
   framework's agent loop), so every tool call goes through `RecordService` as the run's
   principal (source `workflow`, provenance `agent_inference`) with our object allowlist
   and limits. The step ends only through `submit_result` (`strict` where the provider
@@ -1002,10 +1008,12 @@ including Claude's, can be imported.
   approval, then a declarative update step.
 - **Errors:** content filtering (`AI_REFUSED`), cut-off output, turn limit, budget,
   bad request or invalid key fail the step; rate limits, timeouts and server errors are
-  retried by LiteLLM and then by the job.
+  retried by the SDK (twice) and then by the job.
 - **Known limits / data gaps:** tool-calling reliability differs a lot between models
   and is untested here; weaker models will hit the output check and turn limit more
-  often. Provider-specific features (e.g. server-side refusal fallbacks) are not used.
+  often. Unverified against live providers: `max_completion_tokens` for OpenAI (newer
+  models reject `max_tokens`) vs `max_tokens` elsewhere, and strict function schemas
+  (sent for OpenAI and OpenRouter, not for compatible servers).
   Writes made by tools are not exactly-once if a worker crashes mid-step. Not yet run
   against a live provider.
 
@@ -1293,7 +1301,7 @@ the implementation is written from first principles.
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
-| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). job queue, worker, record and schedule triggers (§12.7). AI steps on the tenant's own model connections, any provider via LiteLLM (§12.5a). **Next:** metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
+| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). job queue, worker, record and schedule triggers (§12.7). AI steps on the tenant's own model connections: OpenAI, OpenRouter, or compatible servers (§12.5a). **Next:** metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single

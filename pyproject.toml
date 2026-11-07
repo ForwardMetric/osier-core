@@ -12,8 +12,8 @@ dependencies = [
     "jsonschema>=4.23",
     "langgraph>=1.2,<1.3",
     "langgraph-checkpoint-postgres>=3.2,<3.3",
-    "litellm>=1.108,<1.109",
     "mcp>=2.3,<3",
+    "openai>=3.46,<4",
     "procrastinate>=3.10,<3.11",
     "psycopg[binary]>=3.2",
     "pydantic>=2.7",
@@ -39,10 +39,6 @@ packages = ["src/osier"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-filterwarnings = [
-    # LiteLLM's own TypedDicts under Pydantic; not ours to fix.
-    "ignore:Items .* are using the `ReadOnly` qualifier:UserWarning",
-]
 
 [tool.ruff]
 line-length = 100
