@@ -178,7 +178,8 @@ def cmd_approvals_list(args: argparse.Namespace) -> None:
     session = _admin(config)
     changes = session.schema.pending()
     calls = ConnectorService(session, config.broker()).pending_calls()
-    if not changes and not calls:
+    runs = session.workflows.awaiting_decision()
+    if not changes and not calls and not runs:
         print("Nothing is waiting for approval.")
         return
     for c in changes:
@@ -195,6 +196,9 @@ def cmd_approvals_list(args: argparse.Namespace) -> None:
             f"requested by {c['requested_by_type']})"
         )
         print(f"    {c['summary']}")
+    for r in runs:
+        print(f"[workflow] {r['run_id']}  ({r['workflow']} v{r['version']})")
+        print(f"    {r['waiting_for']['message']}")
 
 
 def _find(session: Session, config: DevConfig, item_id: str) -> tuple[str, dict[str, Any]]:
@@ -211,7 +215,14 @@ def _find(session: Session, config: DevConfig, item_id: str) -> tuple[str, dict[
         )
         return "action", call
     except OsierError:
-        raise OsierError(f"Nothing to approve with id {item_id}.", code="NOT_FOUND") from None
+        pass
+    try:
+        run = session.workflows.get_run(item_id)
+        if run["status"] == "waiting":
+            return "workflow", run
+    except OsierError:
+        pass
+    raise OsierError(f"Nothing to approve with id {item_id}.", code="NOT_FOUND")
 
 
 def cmd_approvals_show(args: argparse.Namespace) -> None:
@@ -242,6 +253,12 @@ def cmd_approvals_approve(args: argparse.Namespace) -> None:
         else:
             result = session.schema.apply(uuid.UUID(args.id), diff_hash=item["diff_hash"])
         _print(result.to_dict())
+    elif kind == "workflow":
+        print(f"{item['workflow']} v{item['version']}: {item['waiting_for']['message']}")
+        if not _confirm("Approve?", args.yes):
+            print("Not approved.")
+            return
+        _print(session.workflows.decide(args.id, approve=True))
     else:
         print(item["summary"])
         arguments = item.get("arguments") or {}
@@ -261,6 +278,8 @@ def cmd_approvals_reject(args: argparse.Namespace) -> None:
     kind, _ = _find(session, config, args.id)
     if kind == "schema":
         _print(session.schema.reject(args.id))
+    elif kind == "workflow":
+        _print(session.workflows.decide(args.id, approve=False))
     else:
         _print(ConnectorService(session, config.broker()).reject(args.id))
 
@@ -535,6 +554,70 @@ def cmd_skills_versions(args: argparse.Namespace) -> None:
     _print(_admin(DevConfig.load()).skills.versions(args.name))
 
 
+def _load_definition(path: str) -> Any:
+    from pathlib import Path
+
+    import yaml
+
+    text = Path(path).read_text()
+    return json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
+
+
+def cmd_workflows_list(args: argparse.Namespace) -> None:
+    for w in _admin(DevConfig.load()).workflows.list():
+        print(f"{w['name']:<32} v{w['version']:<3} {w['status']:<9} {w['description'][:80]}")
+
+
+def cmd_workflows_show(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).workflows.get(args.name)["definition"])
+
+
+def cmd_workflows_add(args: argparse.Namespace) -> None:
+    session = _admin(DevConfig.load())
+    definition = _load_definition(args.path)
+    preview = session.workflows.preview(definition)
+    print(f"{preview['action'].capitalize()} workflow {preview['name']!r}")
+    print(f"  {preview['description']}")
+    for line in preview["steps"]:
+        print(f"  - {line}")
+    if not _confirm("Save it?", args.yes):
+        print("Not saved.")
+        return
+    _print(session.workflows.save(definition))
+
+
+def cmd_workflows_start(args: argparse.Namespace) -> None:
+    inputs: dict[str, Any] = json.loads(args.inputs_json) if args.inputs_json else {}
+    for pair in args.input or []:
+        key, _, value = pair.partition("=")
+        inputs[key] = value
+    _print(_admin(DevConfig.load()).workflows.start(args.name, inputs))
+
+
+def cmd_workflows_runs(args: argparse.Namespace) -> None:
+    for r in _admin(DevConfig.load()).workflows.runs(status=args.status, limit=args.limit):
+        print(f"{r['run_id']}  {r['workflow']:<28} {r['status']:<10} {r['started_at']}")
+
+
+def cmd_workflows_run(args: argparse.Namespace) -> None:
+    session = _admin(DevConfig.load())
+    _print(
+        {**session.workflows.get_run(args.run_id), "events": session.workflows.events(args.run_id)}
+    )
+
+
+def cmd_workflows_cancel(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).workflows.cancel(args.run_id))
+
+
+def cmd_workflows_status(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).workflows.set_status(args.name, args.status))
+
+
+def cmd_workflows_versions(args: argparse.Namespace) -> None:
+    _print(_admin(DevConfig.load()).workflows.versions(args.name))
+
+
 def cmd_connections_list(args: argparse.Namespace) -> None:
     _print(_connectors(DevConfig.load()).list_connections())
 
@@ -731,6 +814,42 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("visibility", choices=["private", "roles", "organization"])
     sh.add_argument("--role", action="append")
     sh.set_defaults(func=cmd_skills_share)
+
+    wf = sub.add_parser("workflows", help="workflows and their runs").add_subparsers(
+        dest="workflows_command", required=True
+    )
+    wf.add_parser("list").set_defaults(func=cmd_workflows_list)
+    for name, func, help_text in (
+        ("show", cmd_workflows_show, "print a definition"),
+        ("versions", cmd_workflows_versions, "version history"),
+    ):
+        p = wf.add_parser(name, help=help_text)
+        p.add_argument("name")
+        p.set_defaults(func=func)
+    p = wf.add_parser("add", help="add or update from a JSON or YAML definition file")
+    p.add_argument("path")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.set_defaults(func=cmd_workflows_add)
+    p = wf.add_parser("start", help="start a run")
+    p.add_argument("name")
+    p.add_argument("--input", action="append", help="KEY=VALUE (repeatable)")
+    p.add_argument("--inputs-json", help="all inputs as a JSON object")
+    p.set_defaults(func=cmd_workflows_start)
+    p = wf.add_parser("runs", help="recent runs")
+    p.add_argument("--status")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_workflows_runs)
+    for name, func, help_text in (
+        ("run", cmd_workflows_run, "a run with its events"),
+        ("cancel", cmd_workflows_cancel, "cancel a run"),
+    ):
+        p = wf.add_parser(name, help=help_text)
+        p.add_argument("run_id")
+        p.set_defaults(func=func)
+    p = wf.add_parser("status", help="enable, disable, or retire a workflow")
+    p.add_argument("name")
+    p.add_argument("status", choices=["active", "disabled", "retired"])
+    p.set_defaults(func=cmd_workflows_status)
 
     out = sub.add_parser("outbox", help="recent emails and connector actions")
     out.add_argument("--limit", type=int, default=20)

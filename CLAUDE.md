@@ -33,6 +33,9 @@ uv run ruff check . && uv run ruff format --check .
   `mcp_remote.py`), OAuth sign-in (`oauth.py`, `oauth_service.py`, `oauth_callback.py`)
 - `src/osier/skills.py` — text skills (Agent Skills `SKILL.md`): parse, import, versions,
   visibility (`SkillService`, via `session.skills`)
+- `src/osier/workflows/` — workflows: `spec.py` (declarative definition, references,
+  validation), `service.py` (`WorkflowService`: versions, runs, approvals; compiles to a
+  LangGraph graph), `checkpoint.py` (LangGraph checkpointer on `TenantConnection`)
 - `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
   (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
@@ -84,3 +87,6 @@ uv run ruff check . && uv run ruff format --check .
 16. **Confirmation resolvers must be side-effect free.** MCP tools that ask the person
     to confirm compute a deterministic preview in the resolver (it may run more than
     once) and act only in the tool body, after an approved answer, as the person.
+17. **Workflows never run code and never escalate.** Steps are declarative; a run uses
+    the permissions of whoever started it; approvals are decided by people only. Use
+    `TenantCheckpointSaver`, never LangGraph's own Postgres saver (it bypasses the guard).

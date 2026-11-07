@@ -167,6 +167,26 @@ uv run osier skills add path/to/skill-folder
 ```
 
 `osier skills list | show | versions | status | share` manage the library.
+
+### Workflows
+
+A workflow is a saved process: read and find records, create or update them,
+branch on conditions, and pause for a person's approval. Ask Claude to build one
+("when I give you a lead, ask me to approve and then mark it qualified"), confirm
+the steps, then ask Claude to run it. Runs use your own permissions, and approvals
+appear in `list_pending_approvals`. From the terminal, with a JSON or YAML
+definition (format in `src/osier/workflows/spec.py`):
+
+```bash
+uv run osier workflows add qualify-lead.yaml
+```
+
+```bash
+uv run osier workflows start qualify-lead --input lead_id=<id>
+```
+
+`osier workflows list | show | versions | runs | run | cancel | status`, and
+`osier approvals list | approve | reject` for waiting runs.
 Adding and changing skills needs the Developer or Admin role; everyone can use
 the skills shared with them.
 
@@ -185,6 +205,8 @@ the skills shared with them.
 | `connect_app`, `finish_app_connection`, `share_connection` | Connect apps with OAuth sign-in and decide who may use them |
 | `list_skills`, `get_skill` | Your organization's skills (instructions for recurring work); agents check them first |
 | `save_skill`, `import_skill`, `update_skill_settings` | Add, update, import (GitHub or a URL), share, disable skills; text only; you confirm |
+| `list_workflows`, `get_workflow`, `save_workflow`, `update_workflow_status` | Repeatable processes: record steps, conditions, approvals; defining one needs Developer or Admin; you confirm |
+| `start_workflow`, `get_workflow_run`, `list_workflow_runs`, `decide_workflow_approval`, `cancel_workflow_run` | Run workflows with your own permissions; approvals pause the run until a person decides |
 | `whoami`, `list_pending_approvals`, `approve_pending` | Your roles and permissions; review and confirm waiting items |
 
 ## What is implemented
@@ -204,12 +226,15 @@ the skills shared with them.
   capability + purpose routing; approval queue; audit; automatic CRM logging.
 - **Skills:** text skills in the Agent Skills (`SKILL.md`) format per tenant, with
   versions, visibility, import from GitHub, and `osier skills` commands.
+- **Workflows:** declarative definitions (no code) run on LangGraph, with record
+  steps, conditions, and approvals that pause the run; checkpoints in the tenant's
+  schema; `osier workflows` commands.
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
 Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone
 signing in to osier), object- and field-level permissions, views, marketing email,
-multi-database placement, reporting, jobs and workflows (LangGraph, next), skills with
-scripts.
+multi-database placement, reporting, background jobs and workflow triggers, agent
+steps in workflows, skills with scripts.
 
 ## Using the engine from Python
 

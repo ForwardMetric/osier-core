@@ -61,6 +61,12 @@ ENGINE_TABLES = frozenset(
         "meta_skills",
         "meta_skill_versions",
         "skill_visibility",
+        "meta_workflows",
+        "meta_workflow_versions",
+        "workflow_runs",
+        "workflow_run_events",
+        "workflow_checkpoints",
+        "workflow_checkpoint_writes",
         "connector_policies",
         "connector_calls",
     }

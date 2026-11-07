@@ -331,6 +331,98 @@ _ENGINE_MIGRATIONS = [
         PRIMARY KEY (skill_id, role_key)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_workflows (
+        id           uuid PRIMARY KEY,
+        name         text NOT NULL UNIQUE,
+        description  text NOT NULL,
+        definition   jsonb NOT NULL,
+        version      integer NOT NULL DEFAULT 1,
+        status       text NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'disabled', 'retired')),
+        created_by   uuid NOT NULL,
+        updated_by   uuid NOT NULL,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        updated_at   timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_workflow_versions (
+        workflow_id     uuid NOT NULL,
+        version         integer NOT NULL,
+        definition      jsonb NOT NULL,
+        changed_by      uuid NOT NULL,
+        changed_by_type text NOT NULL,
+        change          text NOT NULL,
+        changed_at      timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (workflow_id, version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.workflow_runs (
+        id             uuid PRIMARY KEY,
+        workflow_id    uuid NOT NULL,
+        workflow_name  text NOT NULL,
+        version        integer NOT NULL,
+        status         text NOT NULL CHECK (status IN
+                       ('running', 'waiting', 'succeeded', 'rejected', 'failed', 'cancelled')),
+        inputs         jsonb NOT NULL,
+        steps          jsonb NOT NULL DEFAULT '{{}}',
+        output         jsonb,
+        waiting        jsonb,
+        error          jsonb,
+        run_as_user    uuid NOT NULL,
+        run_as_type    text NOT NULL,
+        on_behalf_of   uuid,
+        agent_id       text,
+        started_at     timestamptz NOT NULL DEFAULT now(),
+        updated_at     timestamptz NOT NULL DEFAULT now(),
+        finished_at    timestamptz
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS workflow_runs_status ON {s}.workflow_runs (status, started_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.workflow_run_events (
+        id          bigserial PRIMARY KEY,
+        run_id      uuid NOT NULL,
+        step_id     text,
+        event       text NOT NULL,
+        detail      jsonb NOT NULL DEFAULT '{{}}',
+        actor       uuid,
+        actor_type  text,
+        at          timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.workflow_checkpoints (
+        thread_id             text NOT NULL,
+        checkpoint_ns         text NOT NULL DEFAULT '',
+        checkpoint_id         text NOT NULL,
+        parent_checkpoint_id  text,
+        type                  text NOT NULL,
+        checkpoint            bytea NOT NULL,
+        metadata_type         text NOT NULL,
+        metadata              bytea NOT NULL,
+        created_at            timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.workflow_checkpoint_writes (
+        thread_id      text NOT NULL,
+        checkpoint_ns  text NOT NULL DEFAULT '',
+        checkpoint_id  text NOT NULL,
+        task_id        text NOT NULL,
+        idx            integer NOT NULL,
+        channel        text NOT NULL,
+        type           text NOT NULL,
+        blob           bytea NOT NULL,
+        task_path      text NOT NULL DEFAULT '',
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+    )
+    """,
 ]
 
 

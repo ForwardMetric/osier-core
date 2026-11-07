@@ -51,6 +51,13 @@ class Session:
         return SkillService(self)
 
     @property
+    def workflows(self) -> Any:
+        """The tenant's workflows and their runs."""
+        from .workflows import WorkflowService
+
+        return WorkflowService(self)
+
+    @property
     def authz(self) -> Authorizer:
         """Roles and permissions of the person behind this session."""
         return Authorizer(self.conn, self.tenant, self.principal)

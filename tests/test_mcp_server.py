@@ -473,3 +473,51 @@ def test_member_can_use_but_not_create_skills(server, config, conn, make_user):
     )
     assert refused["error"]["code"] == "MISSING_PERMISSION"
     assert prompts == []  # never asked to confirm something they cannot do
+
+
+def _workflow():
+    from test_workflows import QUALIFY
+
+    return QUALIFY
+
+
+def test_workflow_defined_run_and_approved_in_chat(server, conn, config):
+    assert call(server, "save_workflow", definition=_workflow())["error"]["code"] == (
+        "CONFIRMATION_UNAVAILABLE"
+    )
+    saved = call(server, "save_workflow", _answer="accept", definition=_workflow())
+    assert saved["version"] == 1 and "wait for approval" in prompts[0]
+    assert call(server, "list_workflows")["count"] == 1
+
+    lead = call(server, "create_record", object="lead", values={"family_name": "Doe"})
+    run = call(server, "start_workflow", name="qualify-lead", inputs={"lead_id": lead["id"]})
+    assert run["status"] == "waiting"
+    pending = call(server, "list_pending_approvals")["pending"]
+    assert [p["kind"] for p in pending] == ["workflow_approval"]
+
+    done = call(server, "approve_pending", _answer="accept", item_id=run["run_id"])
+    assert done["status"] == "succeeded" and "Qualify Doe?" in prompts[0]
+
+
+def test_workflow_rejected_in_chat(server):
+    call(server, "save_workflow", _answer="accept", definition=_workflow())
+    lead = call(server, "create_record", object="lead", values={"family_name": "Doe"})
+    run = call(server, "start_workflow", name="qualify-lead", inputs={"lead_id": lead["id"]})
+    assert (
+        call(server, "decide_workflow_approval", run_id=run["run_id"], approve=False)["error"][
+            "code"
+        ]
+        == "CONFIRMATION_UNAVAILABLE"
+    )
+    done = call(
+        server, "decide_workflow_approval", _answer="accept", run_id=run["run_id"], approve=False
+    )
+    assert done["status"] == "rejected" and prompts[0].startswith("Reject?")
+    assert call(server, "get_record", object="lead", record_id=lead["id"])["status"] == "new"
+
+
+def test_member_cannot_define_workflows_in_chat(server, config, conn, make_user):
+    member = make_user("rep@example.com", "member")
+    member_server = build_server(config, sessions=Sessions(config, conn, member.user_id))
+    refused = call(member_server, "save_workflow", _answer="accept", definition=_workflow())
+    assert refused["error"]["code"] == "MISSING_PERMISSION" and prompts == []

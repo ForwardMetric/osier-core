@@ -807,7 +807,7 @@ compatible with MIT. Prefer **one tool for both kinds** of work. **Deferred:** t
 minimal implementation behind the interface (enough for index builds and
 backfills).
 
-### 12.4 Workflow engine: LangGraph under osier's own definition (decided)
+### 12.4 Workflow engine: LangGraph under osier's own definition (decided; first slice built)
 
 - **osier owns the workflow definition**, a declarative, versioned JSON document
   stored as tenant metadata (§12.2): triggers, steps, conditions, approvals.
@@ -825,10 +825,42 @@ backfills).
   stored through the credential broker like any other secret (rule 12).
 - **Rejected: CrewAI** — telemetry is on by default and its model is
   role-playing agent crews rather than durable, checkpointed graphs.
-- **To verify when building (data gap):** LangGraph and checkpointer versions to
-  pin, their licenses (expected MIT), the checkpointer's behaviour with many
-  tenants (one table set per tenant schema vs. shared), and whether its
-  connection handling can go through `TenantConnection` or needs its own role.
+- **Checked when building:** `langgraph` 1.2 and `langgraph-checkpoint` 4.3 are MIT,
+  pinned to `<1.3`. LangGraph's own Postgres checkpointer
+  (`langgraph-checkpoint-postgres`) builds SQL from strings with unqualified table
+  names and relies on `search_path`, so it cannot pass the isolation guard. osier
+  therefore has its own `TenantCheckpointSaver` on LangGraph's public
+  `BaseCheckpointSaver` interface, storing checkpoints in each tenant's schema
+  (`workflow_checkpoints`, `workflow_checkpoint_writes`) through `TenantConnection`.
+  It stores each checkpoint whole (no de-duplication of channel values); fine for
+  small workflow state, to revisit if states grow. Risk: the saver interface marks
+  some parts beta (delta channels); we rely on the default implementations.
+
+**Built in the first slice** (`src/osier/workflows/`):
+
+- **Definition** (`spec.py`): name, description, typed inputs, and steps
+  `get_record`, `query_records`, `create_record`, `update_record`, `condition`,
+  `approval`, `finish`. Steps run in order unless they name `next`; jumps go only
+  forward (every run ends); `{{inputs.x}}` / `{{steps.<id>...}}` references, no
+  expressions, no code. Validated on save against the tenant's objects, fields,
+  and roles. Versioned in `meta_workflows` / `meta_workflow_versions`; a run always
+  finishes on the version it started with.
+- **Runs** (`workflow_runs`, `workflow_run_events`): statuses running, waiting,
+  succeeded, rejected, failed, cancelled. A run executes **with the permissions of
+  whoever started it** (a person or an agent acting for them); a workflow never
+  grants more access. Record writes go through `RecordService` with provenance
+  `workflow run <id>`; `create_record` uses an idempotency key per run and step.
+- **Approvals** pause the run (`interrupt`). Only a person decides, never an
+  agent; the approver needs one of the step's `approver_roles`, or
+  `workflows.manage` when none are named. The decision is claimed atomically, so
+  a run cannot be decided twice. Approvals show in `list_pending_approvals` and
+  `osier approvals`.
+- **Execution is synchronous for now:** a run executes inside the request that
+  starts or resumes it, until it ends or reaches an approval. **Not built yet:**
+  the background job runner, triggers (record events, schedules), retries of
+  failed runs, loops, agent steps (tenant's Claude key), connector-call steps,
+  and running other workflows as steps. Agent steps and long steps need the job
+  runner first, so a chat request is not held open.
 
 ### 12.5 Skills (built: text only)
 
@@ -1087,7 +1119,7 @@ the implementation is written from first principles.
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
 | **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
-| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5). **Next:** workflows on LangGraph (§12.4) with triggers, approvals and agent steps on the tenant's Claude key; metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
+| **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). **Next:** job runner and triggers, then agent steps on the tenant's Claude key; metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine
 always receives a principal with a tenant ID and never assumes a single
