@@ -43,6 +43,7 @@ class McpTransport(BaseModel):
     command: str | None = Field(default=None, max_length=500)
     args: list[str] = Field(default_factory=list, max_length=50)
     secret_headers: list[str] = Field(default_factory=list, max_length=10)
+    auth: Literal["none", "headers", "oauth"] = "headers"
     secret_env: list[str] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
@@ -52,6 +53,8 @@ class McpTransport(BaseModel):
                 raise ValueError("http transport needs an http(s) url")
             if self.command or self.args or self.secret_env:
                 raise ValueError("http transport takes url and secret_headers only")
+            if self.auth == "oauth" and self.secret_headers:
+                raise ValueError("oauth transport does not take secret_headers")
         else:
             if not self.command:
                 raise ValueError("stdio transport needs a command")
@@ -143,6 +146,9 @@ class RemoteMcpClient:
             parsed.hostname or "", port, allow_private_network=self._allow_private_network
         )
         headers = {name: self._secrets[name] for name in t.secret_headers}
+        if t.auth == "oauth":
+            tokens = self._secrets["oauth"]["tokens"]
+            headers["Authorization"] = f"Bearer {tokens['access_token']}"
         http = httpx2.AsyncClient(headers=headers, timeout=CALL_TIMEOUT_SECONDS)
         return Client(streamable_http_client(t.url, http_client=http))
 

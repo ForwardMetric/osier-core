@@ -54,6 +54,7 @@ class McpConnectorsMixin:
     _allow_local_processes: bool
     _mcp_client_factory: Any
     _authz: Any
+    _refresh_if_needed: Any
 
     # ---- helpers ---------------------------------------------------------------------
 
@@ -76,6 +77,8 @@ class McpConnectorsMixin:
                 details={"errors": [e["msg"] for e in exc.errors(include_url=False)]},
             ) from None
         missing = [n for n in (*parsed.secret_headers, *parsed.secret_env) if not secrets.get(n)]
+        if parsed.auth == "oauth" and not secrets.get("oauth"):
+            missing.append("oauth")
         if missing:
             raise RecordValidationError(
                 f"Missing secret values for {missing}.", code="CONNECTOR_INPUT_INVALID"
@@ -138,7 +141,7 @@ class McpConnectorsMixin:
             if cred["secret_ciphertext"] is not None
             else {}
         )
-        return cred["config"], secrets
+        return cred["config"], self._refresh_if_needed(connection_id, secrets)
 
     def _tool_policies(self, connection_id: str) -> dict[str, str]:
         row = self._conn.execute(

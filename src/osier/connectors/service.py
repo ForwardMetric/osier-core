@@ -24,6 +24,7 @@ from ..errors import (
 from .base import ConnectorType, ExecutionContext
 from .email import SendEmail
 from .mcp_service import McpConnectorsMixin
+from .oauth_service import OAuthConnectMixin
 from .vault import CredentialBroker
 
 ENGINE_SERVICE = "connectors"
@@ -51,7 +52,7 @@ def _validation_error(message: str, exc: PydanticValidationError) -> RecordValid
     )
 
 
-class ConnectorService(McpConnectorsMixin):
+class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
     def __init__(
         self,
         session: Any,  # Session (avoids an import cycle)
@@ -60,6 +61,7 @@ class ConnectorService(McpConnectorsMixin):
         allow_private_network: bool = False,
         allow_local_processes: bool = False,
         mcp_client_factory: Any = None,
+        oauth_http_client: Any = None,
     ) -> None:
         from . import CONNECTOR_TYPES
 
@@ -74,6 +76,7 @@ class ConnectorService(McpConnectorsMixin):
         self._authz = Authorizer(session.conn, session.tenant, session.principal)
         self._allow_local_processes = allow_local_processes
         self._mcp_client_factory = mcp_client_factory
+        self._oauth_http_client = oauth_http_client
 
     # ---- helpers ---------------------------------------------------------------------
 

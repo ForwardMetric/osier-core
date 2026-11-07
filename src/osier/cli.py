@@ -284,8 +284,65 @@ def _print_tools(tools: list[dict[str, Any]], policy_key: str) -> None:
         print(f"      {t['description'][:200]}")
 
 
+def _connect_mcp_oauth(args: argparse.Namespace, config: DevConfig) -> None:
+    import threading
+    import webbrowser
+
+    from .connectors.oauth_callback import CallbackServer, redirect_uri
+
+    svc = _connectors(config)
+    done = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def on_callback(state: str, code: str | None, error: str | None) -> tuple[bool, str]:
+        ok, message = config.complete_oauth(state, code, error)
+        outcome.update(ok=ok, message=message)
+        done.set()
+        return ok, message
+
+    server = CallbackServer(config.oauth_callback_port, on_callback)
+    server.start()
+    try:
+        started = svc.start_mcp_oauth(
+            args.name,
+            url=args.url,
+            description=args.description,
+            redirect_uri=redirect_uri(config.oauth_callback_port),
+            visibility=args.visibility,
+            visible_roles=args.role,
+            client_id=args.client_id,
+            client_secret=_ask_secret("client secret") if args.client_secret else None,
+        )
+        print(f"Sign in to {started['provider']} in your browser:")
+        print(f"  {started['authorization_url']}")
+        webbrowser.open(started["authorization_url"])
+        if not done.wait(timeout=600):
+            raise OsierError("Timed out waiting for the sign-in to finish.", code="OAUTH_TIMEOUT")
+    finally:
+        server.stop()
+    if not outcome.get("ok"):
+        raise OsierError(outcome.get("message", "Sign-in failed."), code="OAUTH_FAILED")
+    review = svc.review_mcp_oauth(started["oauth_id"])
+    print(
+        f"{len(review['tools'])} tools offered (auto = runs immediately, approval = you approve):"
+    )
+    _print_tools(review["tools"], "default_policy")
+    if not _confirm("Connect with these tools and policies?", args.yes):
+        print("Not connected.")
+        return
+    connection = svc.finish_mcp_oauth(started["oauth_id"], expected_tools_hash=review["tools_hash"])
+    print(f"Connected {connection['name']} (visible to: {connection['visibility']}).")
+    if connection.get("warning"):
+        print(f"Note: {connection['warning']}")
+
+
 def cmd_connect_mcp(args: argparse.Namespace) -> None:
     config = DevConfig.load()
+    if args.oauth:
+        if not args.url:
+            raise OsierError("--oauth needs --url (the server's MCP endpoint).")
+        _connect_mcp_oauth(args, config)
+        return
     if bool(args.url) == bool(args.command):
         raise OsierError("Give either --url (remote server) or --command (local server).")
     transport: dict[str, Any] = (
@@ -318,6 +375,8 @@ def cmd_connect_mcp(args: argparse.Namespace) -> None:
         transport=transport,
         secrets=secrets,
         expected_tools_hash=inspected["tools_hash"],
+        visibility=args.visibility,
+        visible_roles=args.role,
     )
     print(f"Connected {connection['name']} ({connection['connector_type']}).")
     print(
@@ -352,6 +411,19 @@ def cmd_connections_review(args: argparse.Namespace) -> None:
     if _confirm("Accept the server's current tools?", args.yes):
         svc.accept_mcp_tools(args.name, review["tools_hash"])
         print("Accepted. Changed tools went back to their default policy.")
+
+
+def _visibility_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--visibility",
+        choices=["private", "roles", "organization"],
+        help="who may have agents use it (default: organization, or private for personal accounts)",
+    )
+    parser.add_argument("--role", action="append", help="role key, with --visibility roles")
+
+
+def cmd_connections_share(args: argparse.Namespace) -> None:
+    _print(_connectors(DevConfig.load()).set_visibility(args.name, args.visibility, args.role))
 
 
 def cmd_connections_list(args: argparse.Namespace) -> None:
@@ -465,6 +537,16 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_p.add_argument(
         "--secret-env", action="append", help="environment variable with a secret value"
     )
+    mcp_p.add_argument(
+        "--oauth", action="store_true", help="sign in with OAuth in your browser (e.g. Notion)"
+    )
+    mcp_p.add_argument(
+        "--client-id", help="OAuth client id, if the server has no automatic registration"
+    )
+    mcp_p.add_argument(
+        "--client-secret", action="store_true", help="ask for an OAuth client secret"
+    )
+    _visibility_args(mcp_p)
     mcp_p.add_argument("-y", "--yes", action="store_true")
     mcp_p.set_defaults(func=cmd_connect_mcp)
 
@@ -472,6 +554,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="connections_command", required=True
     )
     conns.add_parser("list").set_defaults(func=cmd_connections_list)
+    share_p = conns.add_parser("share", help="change who may use a connection")
+    share_p.add_argument("name")
+    share_p.add_argument("visibility", choices=["private", "roles", "organization"])
+    share_p.add_argument("--role", action="append")
+    share_p.set_defaults(func=cmd_connections_share)
     tools_p = conns.add_parser("tools", help="tools of an MCP server connection")
     tools_p.add_argument("name")
     tools_p.set_defaults(func=cmd_connections_tools)

@@ -7,6 +7,7 @@ import os
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import psycopg
 
@@ -38,6 +39,7 @@ class DevConfig:
     allow_private_network: bool = False
     # Local development only: lets MCP connectors start local server processes (stdio).
     allow_local_processes: bool = True
+    oauth_callback_port: int = 8765
 
     @property
     def tenant(self) -> Tenant:
@@ -70,6 +72,29 @@ class DevConfig:
         with self.connect() as conn:
             upgrade_engine_tables(conn, self.tenant)
             PackageService(self.session(Principal.system("upgrade"), conn)).ensure_current()
+
+    def connectors(self, principal: Principal, conn: psycopg.Connection | None = None) -> Any:
+        from .connectors import ConnectorService
+
+        return ConnectorService(
+            self.session(principal, conn),
+            self.broker(),
+            allow_private_network=self.allow_private_network,
+            allow_local_processes=self.allow_local_processes,
+        )
+
+    def complete_oauth(self, state: str, code: str | None, error: str | None) -> tuple[bool, str]:
+        """OAuth callback handler: finish the token exchange for a pending sign-in."""
+        from .errors import OsierError
+
+        with self.connect() as conn:
+            try:
+                done = self.connectors(Principal.system("oauth-callback"), conn).complete_mcp_oauth(
+                    state, code=code, error=error
+                )
+            except OsierError as exc:
+                return False, exc.message
+        return True, f"{done['name']} is signed in. Return to Claude (or the terminal) to finish."
 
     def broker(self) -> CredentialBroker:
         return CredentialBroker.from_environment(Path(self.key_file))
