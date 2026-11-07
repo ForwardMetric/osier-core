@@ -789,7 +789,39 @@ parameter needs a real description (same design rules as objects, §4.7), and
 each action declares a **side-effect level**: `read`, `write`, or
 `external_send`.
 
-### 13.2 Runtimes: standard and custom connectors
+### 13.2 The connector interface is MCP-shaped
+
+Claude's connectors, and the connectors many vendors publish, are MCP
+servers. To use that ecosystem, osier's connector interface follows the MCP
+tool model:
+
+- A connector **action is an MCP tool**: `name`, `description`, JSON Schema
+  `inputSchema` (and output schema where known), and MCP **tool annotations**.
+  Side-effect levels map onto annotations: `read` → `readOnlyHint: true`;
+  `write` → `readOnlyHint: false`; `external_send` → also
+  `openWorldHint: true`; irreversible actions → `destructiveHint: true`.
+- Native connectors expose exactly this shape, so a native connector and a
+  registered remote MCP server are interchangeable from the engine's view.
+- **Any MCP server can be registered as a connector type** (runtime `mcp`).
+  Its tools become actions; a declarative mapping links provider tools to
+  osier capabilities (e.g. a vendor's `send_message` → `email.send`).
+
+**When osier relays a connector vs. when Claude uses it directly.** A user can
+connect Claude to osier *and* to, say, a Gmail MCP server, and Claude can
+already combine them in a chat with no osier work. osier relays a connector
+when it must add something the client cannot: approvals and consent checks,
+purpose routing, audit, automatic CRM logging (e.g. sent email → activity),
+and use by **background agents and workflows** when no chat client is open.
+Both modes are supported; the governed path goes through osier.
+
+**Risks of third-party MCP servers:** their tool descriptions and outputs are
+untrusted (prompt injection, "tool poisoning"). osier pins each registered
+server's tool definitions (hash) and requires re-approval when they change;
+outputs are marked untrusted. OAuth to remote servers follows the MCP
+authorization spec; some servers do not support dynamic client registration,
+so manual client registration must also be possible.
+
+### 13.3 Runtimes: standard and custom connectors
 
 | Runtime | Written by | How it runs | Use |
 |---|---|---|---|
@@ -801,7 +833,7 @@ Standard connector types live in code (and in the database catalog from M5,
 like packages). Custom connector types are registered through approved change
 sets and stored in `meta_connector_types`.
 
-### 13.3 Multiple connections per tenant
+### 13.4 Multiple connections per tenant
 
 A tenant may have any number of connections, including several for the same
 capability and several email platforms at once (e.g. Gmail for one-to-one
@@ -817,7 +849,7 @@ Connections are **organization-wide** (one company account) or **per user**
 (each person's own mailbox; the acting user's connection is used). Automatic
 routing rules (by region, brand, failover) are deferred until needed.
 
-### 13.4 Purpose is a safety rule
+### 13.5 Purpose is a safety rule
 
 | | `transactional` | `marketing` |
 |---|---|---|
@@ -832,7 +864,7 @@ structural limits above (recipient caps, record ties, rate limits, audit)
 make misuse of the transactional path hard and visible, not impossible.
 Legal treatment (CAN-SPAM, GDPR, ePrivacy) must be confirmed with counsel.
 
-### 13.5 Storage
+### 13.6 Storage
 
 **Engine tables** (tenant schema, written only by connector code):
 
@@ -850,7 +882,7 @@ external sends.
 
 **Object:** `connection` (name, connector type, purpose, scope, owning user,
 default flag, status, last error, last used, connected at) in a **system
-package**, marked **engine-managed** (§13.6): visible and queryable like any
+package**, marked **engine-managed** (§13.7): visible and queryable like any
 object, changed only by connector code.
 
 **Credentials decision:** credentials are stored **in the tenant schema**,
@@ -861,7 +893,7 @@ credential-broker interface so a dedicated vault can replace this later
 without changing connector code. Agents, logs, and `describe_schema` never
 see secrets.
 
-### 13.6 Foundations this needs (built)
+### 13.7 Foundations this needs (built)
 
 1. **System packages vs optional packages** (§11.2). The connector foundation
    adds a system package `integrations` holding `connection`.
@@ -870,7 +902,7 @@ see secrets.
 3. **The `engine_managed` access level** (§11.2): `connection` is
    `engine_managed` with `managed_by = connectors`.
 
-### 13.7 Safety
+### 13.8 Safety
 
 - **Approval by side-effect level:** reads run freely; writes follow policy;
   external sends need confirmation by default, bulk sends always.
@@ -884,7 +916,7 @@ see secrets.
 - **Audit every call;** rate limits, retries with idempotency keys,
   timeouts; long operations (syncs, campaign sends) use the job queue (M7).
 
-### 13.8 Deferred
+### 13.9 Deferred
 
 Inbound webhooks and triggers (M7), data sync and its state (M7), rate-limit
 counters (when rate limiting is built), automatic routing rules.
@@ -922,7 +954,7 @@ the implementation is written from first principles.
 |---|---|
 | **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. One tenant schema, always addressed by fully qualified names. |
 | **M2 — MCP server** | Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
-| **M2.5 — Connector foundation** | Engine tables (§13.5), credential broker with encryption, `connection` object, capability and purpose routing, action execution with policy and audit, one native connector, declarative HTTP runtime with network protections. Depends on system packages, package upgrades, and the `engine_managed` level (§13.6), which are built first. |
+| **M2.5 — Connector foundation** | Engine tables (§13.6), credential broker with encryption, `connection` object, capability and purpose routing, action execution with policy and audit, one native connector, declarative HTTP runtime with network protections. Depends on system packages, package upgrades, and the `engine_managed` level (§13.7), which are built first. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
@@ -954,7 +986,7 @@ tenant.
 | 11 | First email connectors: which mailbox (Gmail / Microsoft 365), transactional (SendGrid / Postmark), and marketing (Klaviyo / Mailchimp) providers? | Open. |
 | 12 | Custom connectors: declarative HTTP only, or also registering remote MCP servers? | Open. |
 | 13 | Default approval policy for external sends: all sends, or only bulk sends? | Open; proposed default is confirm all external sends until there is a track record. |
-| 14 | Which key management service holds credential encryption keys? | Open; decided with hosting. Credentials themselves live in the tenant schema (§13.5). |
+| 14 | Which key management service holds credential encryption keys? | Open; decided with hosting. Credentials themselves live in the tenant schema (§13.6). |
 
 ---
 

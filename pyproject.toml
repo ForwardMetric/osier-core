@@ -6,6 +6,8 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=43",
+    "mcp>=1.12",
     "psycopg[binary]>=3.2",
     "pydantic>=2.7",
 ]
