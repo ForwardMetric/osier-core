@@ -5,7 +5,7 @@ from __future__ import annotations
 from ._dsl import create_object, field, lookup, picklist
 
 NAME = "integrations"
-VERSION = 1
+VERSION = 2  # v2: visibility (who may use a connection)
 LABEL = "Integrations"
 DESCRIPTION = (
     "Connections to external systems (email providers, marketing platforms, other "
@@ -76,10 +76,24 @@ OPERATIONS = [
                 ),
             ),
             field(
+                "visibility",
+                "Visibility",
+                "picklist",
+                "Who may have their agents use this connection; managing it always needs "
+                "the connections.manage permission.",
+                required=True,
+                default="organization",
+                options=picklist(
+                    ("private", "Private", "Only the person who connected it."),
+                    ("roles", "Roles", "People holding one of the selected roles."),
+                    ("organization", "Organization", "Everyone in the organization."),
+                ),
+            ),
+            field(
                 "owner_user",
                 "Owner",
                 "lookup",
-                "The user a user-scoped connection belongs to; empty for organization scope.",
+                "The person who connected it, for private or user-scoped connections.",
                 options=lookup("app_user", "cascade"),
             ),
             field(

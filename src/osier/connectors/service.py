@@ -119,9 +119,91 @@ class ConnectorService(McpConnectorsMixin):
         return self._principal.on_behalf_of or self._principal.user_id
 
     def _visible(self, connection: dict[str, Any]) -> bool:
-        return connection["scope"] == "organization" or connection["owner_user"] == str(
-            self._acting_user()
+        """May the person behind this request have agents use the connection?"""
+        if self._principal.actor_type is ActorType.SYSTEM:
+            return True
+        visibility = connection.get("visibility") or "organization"
+        if visibility == "organization":
+            return True
+        if connection["owner_user"] == str(self._acting_user()):
+            return True
+        if visibility == "roles":
+            return bool(set(self._visible_roles(connection["id"])) & set(self._authz.roles()))
+        return False
+
+    def _visible_roles(self, connection_id: str) -> list[str]:
+        return [
+            r[0]
+            for r in self._conn.execute(
+                sql.SQL("SELECT role_key FROM {} WHERE connection_id = %s ORDER BY 1").format(
+                    self._t("connector_visibility")
+                ),
+                (connection_id,),
+            ).fetchall()
+        ]
+
+    def _check_visibility(self, visibility: str | None, roles: list[str] | None, scope: str) -> str:
+        visibility = visibility or ("private" if scope == "user" else "organization")
+        if visibility not in ("private", "roles", "organization"):
+            raise RecordValidationError(
+                f"Invalid visibility {visibility!r}.",
+                field="visibility",
+                expected=["private", "roles", "organization"],
+            )
+        if (visibility == "roles") != bool(roles):
+            raise RecordValidationError(
+                "List the roles exactly when visibility is 'roles'.", field="visible_roles"
+            )
+        if roles:
+            known = {r["key"] for r in self._session.records.list("role", limit=200)}
+            unknown = sorted(set(roles) - known)
+            if unknown:
+                raise RecordValidationError(
+                    f"Unknown roles {unknown}.", field="visible_roles", expected=sorted(known)
+                )
+        return visibility
+
+    def _store_visibility(self, connection_id: str, roles: list[str] | None) -> None:
+        self._conn.execute(
+            sql.SQL("DELETE FROM {} WHERE connection_id = %s").format(
+                self._t("connector_visibility")
+            ),
+            (connection_id,),
         )
+        for role in roles or []:
+            self._conn.execute(
+                sql.SQL("INSERT INTO {} (connection_id, role_key) VALUES (%s, %s)").format(
+                    self._t("connector_visibility")
+                ),
+                (connection_id, role),
+            )
+
+    def set_visibility(
+        self, connection_name: str, visibility: str, visible_roles: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Change who may use a connection (people with connections.manage)."""
+        self._require_human("Sharing a connection")
+        connection = self._connection_by_name(connection_name, manage=True)
+        visibility = self._check_visibility(visibility, visible_roles, connection["scope"])
+        with self._conn.transaction():
+            updated = self._records.update(
+                "connection",
+                connection["id"],
+                {"visibility": visibility},
+                expected_row_version=connection["row_version"],
+            )
+            self._store_visibility(connection["id"], visible_roles if visibility == "roles" else [])
+        return self._describe_connection(updated)
+
+    @staticmethod
+    def _sharing_warning(scope: str, visibility: str) -> str | None:
+        if scope == "user" and visibility != "private":
+            return (
+                "This connection uses a person's own account. Everyone it is shared with "
+                "will act as that account (e.g. emails come from that person). Prefer a "
+                "shared company account for shared connections."
+            )
+        return None
 
     # ---- connector types and connections -------------------------------------------
 
@@ -138,6 +220,8 @@ class ConnectorService(McpConnectorsMixin):
         secrets: dict[str, Any] | None = None,
         scope: str = "organization",
         owner_user: uuid.UUID | None = None,
+        visibility: str | None = None,
+        visible_roles: list[str] | None = None,
         is_default: bool = False,
         approval: str = "required",
         max_recipients: int = 10,
@@ -155,10 +239,9 @@ class ConnectorService(McpConnectorsMixin):
             )
         except PydanticValidationError as exc:
             raise _validation_error("Invalid connection settings.", exc) from None
-        if scope == "user" and owner_user is None:
+        visibility = self._check_visibility(visibility, visible_roles, scope)
+        if owner_user is None and (scope == "user" or visibility != "organization"):
             owner_user = self._acting_user()
-        if scope == "organization":
-            owner_user = None
 
         if verify:
             connector.verify(
@@ -180,6 +263,7 @@ class ConnectorService(McpConnectorsMixin):
                     "connector_type": connector.key,
                     "purpose": purpose,
                     "scope": scope,
+                    "visibility": visibility,
                     "owner_user": owner_user,
                     "is_default": is_default,
                     "status": "active",
@@ -205,7 +289,10 @@ class ConnectorService(McpConnectorsMixin):
                 ).format(self._t("connector_policies")),
                 (record["id"], approval, max_recipients, self._principal.user_id),
             )
-        return self._describe_connection(record)
+            self._store_visibility(record["id"], visible_roles)
+        described = self._describe_connection(record)
+        warning = self._sharing_warning(scope, visibility)
+        return {**described, "warning": warning} if warning else described
 
     def _clear_defaults(self, purpose: str, connector: ConnectorType) -> None:
         for other in self._session.records.list(
@@ -249,6 +336,8 @@ class ConnectorService(McpConnectorsMixin):
             "connector_type": record["connector_type"],
             "purpose": record["purpose"],
             "scope": record["scope"],
+            "visibility": record.get("visibility") or "organization",
+            "visible_roles": self._visible_roles(record["id"]),
             "owner_user": record["owner_user"],
             "is_default": record["is_default"],
             "status": record["status"],

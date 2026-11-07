@@ -92,11 +92,12 @@ class McpConnectorsMixin:
             raise NotFoundError(f"No connector type {key!r}.", code="CONNECTOR_TYPE_NOT_FOUND")
         return row
 
-    def _connection_by_name(self, name: str) -> dict[str, Any]:
+    def _connection_by_name(self, name: str, *, manage: bool = False) -> dict[str, Any]:
+        """Find a connection by name: among usable ones, or all of them when managing."""
         matches = [
             c
             for c in self._session.records.list("connection", where={"name": name}, limit=50)
-            if self._visible(c) and c["status"] != "revoked"
+            if (manage or self._visible(c)) and c["status"] != "revoked"
         ]
         if not matches:
             raise NotFoundError(
@@ -110,8 +111,10 @@ class McpConnectorsMixin:
             )
         return matches[0]
 
-    def _mcp_connection(self, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        connection = self._connection_by_name(name)
+    def _mcp_connection(
+        self, name: str, *, manage: bool = False
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        connection = self._connection_by_name(name, manage=manage)
         if not connection["connector_type"].startswith("c__"):
             raise NotFoundError(
                 f"{name!r} is not an MCP server connection.", code="NOT_AN_MCP_CONNECTION"
@@ -170,6 +173,8 @@ class McpConnectorsMixin:
         expected_tools_hash: str,
         tool_policies: dict[str, str] | None = None,
         scope: str = "organization",
+        visibility: str | None = None,
+        visible_roles: list[str] | None = None,
     ) -> dict[str, Any]:
         """Register a server as a connector and connect it, pinning the reviewed tools."""
         self._require_human("Connecting an MCP server")
@@ -195,8 +200,11 @@ class McpConnectorsMixin:
                 )
             policies[tool] = policy
 
+        visibility = self._check_visibility(visibility, visible_roles, scope)
         key = self._new_type_key(name)
-        owner_user = self._acting_user() if scope == "user" else None
+        owner_user = (
+            self._acting_user() if scope == "user" or visibility != "organization" else None
+        )
         with self._conn.transaction():
             self._conn.execute(
                 sql.SQL(
@@ -224,6 +232,7 @@ class McpConnectorsMixin:
                     "connector_type": key,
                     "purpose": "general",
                     "scope": scope,
+                    "visibility": visibility,
                     "owner_user": owner_user,
                     "status": "active",
                     "connected_at": dt.datetime.now(dt.UTC),
@@ -248,7 +257,10 @@ class McpConnectorsMixin:
                 ).format(self._t("connector_policies")),
                 (record["id"], Jsonb(policies), self._principal.user_id),
             )
-        return {**self._describe_connection(record), "tools": self.list_tools(name)["tools"]}
+            self._store_visibility(record["id"], visible_roles)
+        result = {**self._describe_connection(record), "tools": self.list_tools(name)["tools"]}
+        warning = self._sharing_warning(scope, visibility)
+        return {**result, "warning": warning} if warning else result
 
     def _new_type_key(self, name: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:30] or "server"
@@ -268,7 +280,7 @@ class McpConnectorsMixin:
 
     def set_tool_policy(self, connection_name: str, tool: str, policy: str) -> dict[str, Any]:
         self._require_human("Changing a tool policy")
-        connection, ctype = self._mcp_connection(connection_name)
+        connection, ctype = self._mcp_connection(connection_name, manage=True)
         if policy not in TOOL_POLICIES:
             raise RecordValidationError(f"Invalid policy {policy!r}.", expected=list(TOOL_POLICIES))
         if tool not in {t["name"] for t in ctype["tools"]}:
