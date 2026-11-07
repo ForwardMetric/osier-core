@@ -24,7 +24,7 @@ from ..context import Principal, Tenant
 from ..db import TenantConnection
 from ..errors import IntegrityError, NotFoundError, SchemaChangeError
 from ..metadata import SchemaSnapshot
-from . import case_management, core, crm
+from . import case_management, core, crm, integrations
 from .upgrade import compute_upgrade
 
 
@@ -89,6 +89,7 @@ REGISTRY: dict[str, Package] = {
     p.name: p
     for p in (
         _from_module(core, system=True),
+        _from_module(integrations, system=True),
         _from_module(crm),
         _from_module(case_management),
     )

@@ -18,6 +18,7 @@ def states(session):
 def test_core_is_installed_by_default(session):
     assert states(session) == {
         "core": "installed",
+        "integrations": "installed",
         "crm": "available",
         "case_management": "available",
     }

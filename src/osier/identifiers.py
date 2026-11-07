@@ -52,6 +52,9 @@ ENGINE_TABLES = frozenset(
         "field_history",
         "field_history_default",
         "record_events",
+        "connector_credentials",
+        "connector_policies",
+        "connector_calls",
     }
 )
 

@@ -149,6 +149,58 @@ _ENGINE_DDL = [
     )
     """,
     "CREATE INDEX ON {s}.record_events (record_id, occurred_at)",
+    # --- connectors (ARCHITECTURE.md §13.6) ---------------------------------------------
+    """
+    CREATE TABLE {s}.connector_credentials (
+        connection_id     uuid PRIMARY KEY,
+        config            jsonb NOT NULL,
+        secret_ciphertext bytea,
+        key_id            text,
+        created_at        timestamptz NOT NULL DEFAULT now(),
+        rotated_at        timestamptz,
+        revoked_at        timestamptz
+    )
+    """,
+    """
+    CREATE TABLE {s}.connector_policies (
+        connection_id  uuid PRIMARY KEY,
+        approval       text NOT NULL DEFAULT 'required'
+                       CHECK (approval IN ('required', 'not_required')),
+        max_recipients integer NOT NULL DEFAULT 10 CHECK (max_recipients BETWEEN 1 AND 50),
+        updated_at     timestamptz NOT NULL DEFAULT now(),
+        updated_by     uuid
+    )
+    """,
+    """
+    CREATE TABLE {s}.connector_calls (
+        id               uuid PRIMARY KEY,
+        connection_id    uuid NOT NULL,
+        connector_type   text NOT NULL,
+        action           text NOT NULL,
+        capability       text,
+        purpose          text,
+        status           text NOT NULL CHECK (status IN
+                         ('awaiting_approval', 'rejected', 'running', 'succeeded', 'failed')),
+        summary          text NOT NULL,
+        arguments        jsonb NOT NULL,
+        result           jsonb,
+        error            jsonb,
+        recipients       integer,
+        actor_id         uuid NOT NULL,
+        actor_type       text NOT NULL,
+        on_behalf_of     uuid,
+        agent_id         text,
+        source           text NOT NULL,
+        request_id       uuid,
+        idempotency_key  text UNIQUE,
+        decided_by       uuid,
+        created_at       timestamptz NOT NULL DEFAULT now(),
+        decided_at       timestamptz,
+        completed_at     timestamptz
+    )
+    """,
+    "CREATE INDEX ON {s}.connector_calls (connection_id, created_at)",
+    "CREATE INDEX ON {s}.connector_calls (status) WHERE status = 'awaiting_approval'",
 ]
 
 

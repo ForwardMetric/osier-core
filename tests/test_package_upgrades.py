@@ -65,21 +65,21 @@ def test_registry_rejects_system_package_depending_on_optional():
 
 
 def test_ensure_current_installs_new_system_packages(session, monkeypatch):
-    integrations = Package(
-        name="integrations",
+    sinks = Package(
+        name="event_sinks",
         version=1,
-        label="Integrations",
-        description="Connections to external systems used by agents.",
+        label="Event Sinks",
+        description="Test-only system package with an engine-managed object.",
         depends=("core",),
         system=True,
         operations=[
             create_object(
-                "connection",
-                "Connection",
-                "Connections",
-                "A tenant's link to an external system such as an email provider.",
+                "event_sink",
+                "Event Sink",
+                "Event Sinks",
+                "A test destination where the platform forwards tenant events.",
                 access="engine_managed",
-                managed_by="connectors",
+                managed_by="sink_service",
                 fields=[
                     field("name", "Name", "text", "Display name of the connection.", required=True),
                     field(
@@ -98,28 +98,28 @@ def test_ensure_current_installs_new_system_packages(session, monkeypatch):
             )
         ],
     )
-    monkeypatch.setitem(REGISTRY, "integrations", integrations)
+    monkeypatch.setitem(REGISTRY, "event_sinks", sinks)
     session.packages.ensure_current()
-    assert session.packages.states()["integrations"] == "installed"
+    assert session.packages.states()["event_sinks"] == "installed"
     with pytest.raises(SchemaChangeError) as exc:
-        session.packages.propose_uninstall("integrations")
+        session.packages.propose_uninstall("event_sinks")
     assert exc.value.code == "PACKAGE_NOT_REMOVABLE"
 
     # engine_managed: read-only for everyone except the owning engine service
     with pytest.raises(ApprovalError) as exc:
-        session.records.create("connection", {"name": "Mailbox"})
+        session.records.create("event_sink", {"name": "Mailbox"})
     assert exc.value.code == "ENGINE_MANAGED_OBJECT"
     with pytest.raises(ApprovalError):
-        session.records.for_engine("billing").create("connection", {"name": "Mailbox"})
-    conn = session.records.for_engine("connectors").create("connection", {"name": "Mailbox"})
-    assert session.records.get("connection", conn["id"])["status"] == "pending"
+        session.records.for_engine("billing").create("event_sink", {"name": "Mailbox"})
+    sink = session.records.for_engine("sink_service").create("event_sink", {"name": "Mailbox"})
+    assert session.records.get("event_sink", sink["id"])["status"] == "pending"
     schema = {o["api_name"]: o for o in session.describe_schema()["objects"]}
-    assert schema["connection"]["access"] == "engine_managed"
-    assert schema["connection"]["managed_by"] == "connectors"
+    assert schema["event_sink"]["access"] == "engine_managed"
+    assert schema["event_sink"]["managed_by"] == "sink_service"
 
     # tenants cannot extend engine-managed objects (their records cannot be written)
     with pytest.raises(SchemaChangeError) as exc:
-        session.schema.propose([add("connection", "c__cost_center", "text")])
+        session.schema.propose([add("event_sink", "c__cost_center", "text")])
     assert exc.value.code == "ENGINE_MANAGED_OBJECT"
 
 
