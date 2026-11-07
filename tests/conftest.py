@@ -76,8 +76,35 @@ def crm(session: Session) -> Session:
 
 
 @pytest.fixture
-def agent(crm: Session) -> Session:
-    return crm.as_principal(AGENT)
+def agent(crm: Session, boot) -> Session:
+    """An agent acting for the administrator (so it has the administrator's permissions)."""
+    return crm.as_principal(agent_for(boot.admin_user_id))
+
+
+def agent_for(user_id: uuid.UUID) -> Principal:
+    return Principal(
+        user_id=AGENT.user_id,
+        actor_type=ActorType.AGENT,
+        on_behalf_of=user_id,
+        agent_id="test-agent",
+        source="chat",
+    )
+
+
+@pytest.fixture
+def make_user(session: Session):
+    """Create a user with the given role keys; returns their Principal."""
+
+    def make(email: str, *roles: str) -> Principal:
+        user = session.records.create(
+            "app_user", {"display_name": email.split("@")[0], "email": email, "status": "active"}
+        )
+        for key in roles:
+            role = session.records.list("role", where={"key": key})[0]
+            session.records.create("user_role", {"app_user": user["id"], "role": role["id"]})
+        return Principal(user_id=uuid.UUID(user["id"]), source="chat")
+
+    return make
 
 
 def fld(api_name: str, type: str, **kwargs: Any) -> dict[str, Any]:

@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from . import design
+from .authz import Authorizer
 from .context import ActorType, Principal, Tenant
 from .db import TenantConnection
 from .errors import ApprovalError, InvalidNameError, NotFoundError, SchemaChangeError
@@ -1132,9 +1133,16 @@ class SchemaService:
         self._tenant = tenant
         self._principal = principal
         self._registry = MetadataRegistry(conn, tenant)
+        self._authz = Authorizer(conn, tenant, principal)
 
     def _table(self, name: str) -> sql.Identifier:
         return sql.Identifier(self._tenant.schema, name)
+
+    def _require_permission(self, source: str) -> None:
+        if source == "tenant":
+            self._authz.require("schema.manage", "creating or changing objects and fields")
+        elif source == "package":
+            self._authz.require("packages.manage", "installing or changing packages")
 
     def propose(self, operations: Any, *, source: str = "tenant") -> Proposal:
         """Validate a change set, analyse its impact, and store it as a proposal.
@@ -1146,6 +1154,7 @@ class SchemaService:
             raise SchemaChangeError(f"Invalid source {source!r}.")
         if source in ("platform", "upgrade") and self._principal.actor_type is not ActorType.SYSTEM:
             raise ApprovalError("Only the platform may propose platform or upgrade changes.")
+        self._require_permission(source)
         ops = parse_operations(operations)
         op_dicts = [op.model_dump(mode="json", exclude_unset=True) for op in ops]
         change_set_id = uuid.uuid4()
@@ -1194,6 +1203,9 @@ class SchemaService:
         a single-use confirmation token issued by the approval UI (ARCHITECTURE.md §10.2).
         """
         approver = self._principal
+        source = self.get(change_set_id)["source"]
+        if approver.is_human:
+            self._require_permission(source)
         try:
             with self._conn.transaction():
                 self._conn.execute(
@@ -1330,6 +1342,7 @@ class SchemaService:
             raise ApprovalError(
                 "Proposals must be rejected by a person.", code="APPROVAL_REQUIRES_HUMAN"
             )
+        self._require_permission(self.get(change_set_id)["source"])
         with self._conn.transaction():
             current = self.get(change_set_id)
             if current["status"] != "proposed":

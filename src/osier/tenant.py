@@ -223,6 +223,96 @@ _ENGINE_DDL = [
 ]
 
 
+# Additive, idempotent changes to engine tables. They run for new tenants and, through
+# upgrade_engine_tables, bring tenants created by earlier versions up to date. Never edit
+# an entry; append new ones. (Alembic replaces this when the control plane exists.)
+_ENGINE_MIGRATIONS = [
+    "ALTER TABLE {s}.connector_policies "
+    "ADD COLUMN IF NOT EXISTS tool_policies jsonb NOT NULL DEFAULT '{{}}'",
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_connector_types (
+        key          text PRIMARY KEY,
+        label        text NOT NULL,
+        description  text NOT NULL,
+        runtime      text NOT NULL CHECK (runtime IN ('mcp', 'http')),
+        transport    jsonb NOT NULL,
+        tools        jsonb NOT NULL,
+        tools_hash   text NOT NULL,
+        status       text NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'needs_review', 'retired')),
+        created_by   uuid NOT NULL,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        reviewed_by  uuid,
+        reviewed_at  timestamptz
+    )
+    """,
+    "ALTER TABLE {s}.meta_change_sets DROP CONSTRAINT IF EXISTS meta_change_sets_status_check, "
+    "ADD CONSTRAINT meta_change_sets_status_check CHECK (status IN "
+    "('proposed', 'applied', 'failed', 'superseded', 'rejected'))",
+    """
+    CREATE TABLE IF NOT EXISTS {s}.meta_role_permissions (
+        role_key    text NOT NULL,
+        permission  text NOT NULL,
+        granted_at  timestamptz NOT NULL DEFAULT now(),
+        granted_by  uuid,
+        PRIMARY KEY (role_key, permission)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.connector_visibility (
+        connection_id uuid NOT NULL,
+        role_key      text NOT NULL,
+        PRIMARY KEY (connection_id, role_key)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {s}.connector_oauth_states (
+        id                  uuid PRIMARY KEY,
+        state_hash          text NOT NULL UNIQUE,
+        user_id             uuid NOT NULL,
+        request             jsonb NOT NULL,
+        secret_ciphertext   bytea NOT NULL,
+        key_id              text NOT NULL,
+        status              text NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'authorized', 'completed', 'failed',
+                                              'expired')),
+        error               jsonb,
+        created_at          timestamptz NOT NULL DEFAULT now(),
+        expires_at          timestamptz NOT NULL,
+        completed_at        timestamptz
+    )
+    """,
+]
+
+
+def upgrade_engine_tables(conn: psycopg.Connection, tenant: Tenant) -> None:
+    """Apply engine table migrations to an existing tenant. Safe to run repeatedly.
+
+    Default role permissions are only inserted when the tenant has none yet, so a
+    tenant's own changes to role permissions are never overwritten."""
+    schema = sql.Identifier(tenant.schema)
+    with conn.transaction():
+        for statement in _ENGINE_MIGRATIONS:
+            conn.execute(sql.SQL(statement).format(s=schema))
+        has_permissions = conn.execute(
+            sql.SQL("SELECT EXISTS (SELECT 1 FROM {})").format(
+                sql.Identifier(tenant.schema, "meta_role_permissions")
+            )
+        ).fetchone()
+        if has_permissions and not has_permissions[0]:
+            from .authz import DEFAULT_ROLE_PERMISSIONS
+
+            for role, permissions in DEFAULT_ROLE_PERMISSIONS.items():
+                for permission in permissions:
+                    conn.execute(
+                        sql.SQL(
+                            "INSERT INTO {} (role_key, permission) VALUES (%s, %s) "
+                            "ON CONFLICT DO NOTHING"
+                        ).format(sql.Identifier(tenant.schema, "meta_role_permissions")),
+                        (role, permission),
+                    )
+
+
 def provision_tenant(conn: psycopg.Connection, tenant_id: uuid.UUID | None = None) -> Tenant:
     """Create a new tenant schema with the engine tables. Returns its location."""
     tenant = Tenant(tenant_id=tenant_id or uuid.uuid4(), schema=new_tenant_schema_name())
@@ -231,6 +321,7 @@ def provision_tenant(conn: psycopg.Connection, tenant_id: uuid.UUID | None = Non
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
         for statement in _ENGINE_DDL:
             conn.execute(sql.SQL(statement).format(s=schema))
+    upgrade_engine_tables(conn, tenant)
     return tenant
 
 

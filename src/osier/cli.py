@@ -495,6 +495,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.func is not cmd_dev_init and config_path().exists():
+            DevConfig.load().ensure_current()
         args.func(args)
     except OsierError as exc:
         print(f"error: {exc.message}", file=sys.stderr)

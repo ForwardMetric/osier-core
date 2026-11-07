@@ -61,6 +61,16 @@ class DevConfig:
     def session(self, principal: Principal, conn: psycopg.Connection | None = None) -> Session:
         return Session(conn or self.connect(), self.tenant, principal)
 
+    def ensure_current(self) -> None:
+        """Bring this tenant up to the installed osier version: engine tables, system
+        packages, and additive package upgrades. Cheap when already current."""
+        from .packages import PackageService
+        from .tenant import upgrade_engine_tables
+
+        with self.connect() as conn:
+            upgrade_engine_tables(conn, self.tenant)
+            PackageService(self.session(Principal.system("upgrade"), conn)).ensure_current()
+
     def broker(self) -> CredentialBroker:
         return CredentialBroker.from_environment(Path(self.key_file))
 

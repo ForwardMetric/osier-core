@@ -53,6 +53,7 @@ class McpConnectorsMixin:
     _allow_private_network: bool
     _allow_local_processes: bool
     _mcp_client_factory: Any
+    _authz: Any
 
     # ---- helpers ---------------------------------------------------------------------
 
@@ -374,6 +375,7 @@ class McpConnectorsMixin:
         idempotency_key: str | None = None,
         request_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
+        self._authz.require("actions.request", "having agents use connected apps")
         if idempotency_key is not None:
             existing = self._call_by_key(idempotency_key)
             if existing is not None:

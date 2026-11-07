@@ -22,6 +22,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic import ValidationError as PydanticValidationError
 
+from .authz import Authorizer
 from .context import Principal, Tenant
 from .db import TenantConnection
 from .errors import (
@@ -166,6 +167,11 @@ class RecordService:
         self._principal = principal
         self._engine_service = engine_service
         self._registry = MetadataRegistry(conn, tenant)
+        self._authz = Authorizer(conn, tenant, principal)
+
+    def _require_use(self) -> None:
+        if self._engine_service is None:
+            self._authz.require("records.use", "working with records")
 
     def for_engine(self, service: str) -> RecordService:
         """A record service for an engine component (e.g. ``connectors``) that may write
@@ -372,14 +378,14 @@ class RecordService:
                     hint=f"Use the {obj.managed_by} tools to change them.",
                 )
             return
-        if obj.access == "protected" and not (
-            self._principal.is_human or self._principal.actor_type.value == "system"
-        ):
-            raise ApprovalError(
-                f"{obj.label} records control access and can only be changed by a person.",
-                code="AGENT_WRITE_NOT_ALLOWED",
-                hint="Ask the user to make this change, or propose it for their approval.",
-            )
+        if obj.access == "protected":
+            if not (self._principal.is_human or self._principal.actor_type.value == "system"):
+                raise ApprovalError(
+                    f"{obj.label} records control access and can only be changed by a person.",
+                    code="AGENT_WRITE_NOT_ALLOWED",
+                    hint="Ask the user to make this change, or propose it for their approval.",
+                )
+            self._authz.require("users.manage", f"changing {obj.plural_label.lower()}")
 
     def _check_unique_together(
         self,
@@ -415,6 +421,7 @@ class RecordService:
         provenance: Provenance | dict[str, Any] | None = None,
         request_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
+        self._require_use()
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
         self._guard_protected(obj)
@@ -497,6 +504,7 @@ class RecordService:
         return row[2]
 
     def get(self, object: str, record_id: Any, *, include_retired: bool = False) -> dict[str, Any]:
+        self._require_use()
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
         row = self._fetch(snapshot, obj, record_id)
@@ -511,6 +519,7 @@ class RecordService:
 
     def query(self, query: Any) -> dict[str, Any]:
         """Run a structured query (see ``osier.query``). Returns records plus paging info."""
+        self._require_use()
         from .query import compile_query, parse_query
 
         q = parse_query(query)
@@ -580,6 +589,7 @@ class RecordService:
         provenance: Provenance | dict[str, Any] | None = None,
         request_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
+        self._require_use()
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
         self._guard_protected(obj)
@@ -639,6 +649,7 @@ class RecordService:
         request_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         """Soft-delete a record, applying each incoming lookup's on_delete rule."""
+        self._require_use()
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
         self._guard_protected(obj)
@@ -747,6 +758,7 @@ class RecordService:
             report["retired"].append({"object": obj.api_name, "id": str(rid)})
 
     def history(self, object: str, record_id: Any) -> list[dict[str, Any]]:
+        self._require_use()
         snapshot = self._registry.snapshot()
         obj = snapshot.get_object(object)
         row = self._fetch(snapshot, obj, record_id)

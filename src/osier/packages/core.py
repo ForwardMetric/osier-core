@@ -5,7 +5,7 @@ from __future__ import annotations
 from ._dsl import create_object, field, lookup, picklist, postal_address
 
 NAME = "core"
-VERSION = 1
+VERSION = 2  # v2: adds the Developer role (seed)
 LABEL = "Core"
 DESCRIPTION = (
     "Your own organization, the people who use the platform, and the roles that "
@@ -299,6 +299,16 @@ SEEDS = [
             "key": "admin",
             "is_system_role": True,
             "description": "Full access: can change objects, fields, permissions, and all data.",
+        },
+    ),
+    (
+        "role",
+        "role:developer",
+        {
+            "name": "Developer",
+            "key": "developer",
+            "is_system_role": True,
+            "description": "Changes objects, fields, packages, and connections; everyday work.",
         },
     ),
     (

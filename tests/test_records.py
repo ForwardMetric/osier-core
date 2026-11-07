@@ -3,7 +3,7 @@ import uuid
 
 import psycopg
 import pytest
-from conftest import AGENT, DATABASE_URL, HUMAN_FOR_AGENT, apply, fld, obj
+from conftest import AGENT, DATABASE_URL, apply, fld, obj
 
 from osier import Session
 from osier.errors import (
@@ -146,11 +146,11 @@ def test_field_history_with_agent_attribution_and_provenance(agent):
     assert by_field["stage"]["old_value"] == "prospecting"
     assert by_field["amount"]["actor_type"] == "agent"
     assert by_field["amount"]["agent_id"] == "test-agent"
-    assert by_field["amount"]["on_behalf_of"] == str(HUMAN_FOR_AGENT)
+    assert by_field["amount"]["on_behalf_of"] == str(agent.principal.on_behalf_of)
     assert by_field["amount"]["request_id"] == str(request_id)
     assert by_field["amount"]["provenance"]["source_ref"] == "doc:42#p3"
     # Records created by an agent are owned by the person it acts for.
-    assert opp["owner_id"] == str(HUMAN_FOR_AGENT)
+    assert opp["owner_id"] == str(agent.principal.on_behalf_of)
     assert opp["created_by"] == str(AGENT.user_id)
 
 
@@ -337,7 +337,7 @@ def test_bootstrap_creates_organization_admin_and_roles(session, boot):
     admin = session.records.get("app_user", boot.admin_user_id)
     assert admin["status"] == "active" and admin["organization"] == org["id"]
     roles = {r["key"]: r for r in session.records.list("role")}
-    assert set(roles) == {"admin", "member"}
+    assert set(roles) == {"admin", "developer", "member"}
     assignments = session.records.list("user_role", where={"app_user": admin["id"]})
     assert [a["role"] for a in assignments] == [roles["admin"]["id"]]
 

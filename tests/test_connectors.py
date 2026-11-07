@@ -192,12 +192,10 @@ def test_no_connection(agent_connectors):
     assert exc.value.code == "NO_CONNECTION"
 
 
-def test_user_scoped_connections_are_private(admin_connectors, agent_connectors, crm, boot):
-    from osier import Principal
-
+def test_user_scoped_connections_are_private(admin_connectors, crm, make_user):
     connect_smtp(admin_connectors, scope="user")
     other = ConnectorService(
-        crm.as_principal(Principal(user_id=boot.organization_id)), CredentialBroker(KEY)
+        crm.as_principal(make_user("bob@acme.test", "member")), CredentialBroker(KEY)
     )
     assert other.list_connections() == []
     assert len(admin_connectors.list_connections()) == 1

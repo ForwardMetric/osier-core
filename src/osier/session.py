@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 
+from .authz import Authorizer
 from .changesets import SchemaService
 from .context import Principal, Tenant
 from .db import TenantConnection
@@ -41,6 +42,11 @@ class Session:
         self.metadata = MetadataRegistry(guarded, tenant)
         self.schema = SchemaService(guarded, tenant, principal)
         self.records = RecordService(guarded, tenant, principal)
+
+    @property
+    def authz(self) -> Authorizer:
+        """Roles and permissions of the person behind this session."""
+        return Authorizer(self.conn, self.tenant, self.principal)
 
     @property
     def packages(self) -> PackageService:

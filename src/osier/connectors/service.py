@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
+from ..authz import Authorizer
 from ..context import ActorType, Principal
 from ..errors import (
     ApprovalError,
@@ -70,6 +71,7 @@ class ConnectorService(McpConnectorsMixin):
         self._types = CONNECTOR_TYPES
         self._records = session.records.for_engine(ENGINE_SERVICE)
         self._allow_private_network = allow_private_network
+        self._authz = Authorizer(session.conn, session.tenant, session.principal)
         self._allow_local_processes = allow_local_processes
         self._mcp_client_factory = mcp_client_factory
 
@@ -89,12 +91,29 @@ class ConnectorService(McpConnectorsMixin):
         return connector
 
     def _require_human(self, what: str) -> None:
+        """Managing connections: a person (never an agent) with connections.manage."""
         if not (self._principal.is_human or self._principal.actor_type is ActorType.SYSTEM):
             raise ApprovalError(
                 f"{what} must be done by a person, not an agent.",
                 code="APPROVAL_REQUIRES_HUMAN",
-                hint="Ask the user to do this with the osier command line.",
+                hint="Ask the user to confirm it themselves.",
             )
+        self._authz.require("connections.manage", what.lower())
+
+    def _require_decider(self, row: dict[str, Any], what: str) -> None:
+        """Approving an agent's action: a person who is the one the agent acted for, or
+        who manages connections."""
+        if not (self._principal.is_human or self._principal.actor_type is ActorType.SYSTEM):
+            raise ApprovalError(
+                f"{what} must be done by a person, not an agent.",
+                code="APPROVAL_REQUIRES_HUMAN",
+                hint="Ask the user to confirm it themselves.",
+            )
+        if self._principal.actor_type is ActorType.SYSTEM:
+            return
+        requester = row["on_behalf_of"] if row["actor_type"] == "agent" else row["actor_id"]
+        if requester != self._principal.user_id:
+            self._authz.require("connections.manage", "deciding on someone else's action")
 
     def _acting_user(self) -> uuid.UUID:
         return self._principal.on_behalf_of or self._principal.user_id
@@ -316,6 +335,7 @@ class ConnectorService(McpConnectorsMixin):
         request_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         """Run a capability through a connection, or queue it for a person's approval."""
+        self._authz.require("actions.request", "having agents send email or use apps")
         if idempotency_key is not None:
             existing = self._call_by_key(idempotency_key)
             if existing is not None:
@@ -415,13 +435,13 @@ class ConnectorService(McpConnectorsMixin):
         return self._call_view(self._get_call(call_id))
 
     def approve(self, call_id: Any) -> dict[str, Any]:
-        self._require_human("Approving an external action")
+        self._require_decider(self._get_call(call_id), "Approving an external action")
         row = self._decide(call_id, "running")
         self._execute(row["id"])
         return self._call_view(self._get_call(row["id"]))
 
     def reject(self, call_id: Any) -> dict[str, Any]:
-        self._require_human("Rejecting an external action")
+        self._require_decider(self._get_call(call_id), "Rejecting an external action")
         row = self._decide(call_id, "rejected")
         return self._call_view(self._get_call(row["id"]))
 
