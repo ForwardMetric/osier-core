@@ -9,6 +9,7 @@ if a change alters a decision, update it in the same pull request.
 uv sync                      # install dependencies
 docker compose up -d         # local PostgreSQL 16 (or set OSIER_TEST_DATABASE_URL)
 uv run pytest -q             # tests run against real PostgreSQL
+uv run osier --help          # local setup, MCP server, approvals, connections
 uv run ruff check . && uv run ruff format --check .
 ```
 
@@ -25,6 +26,11 @@ uv run ruff check . && uv run ruff format --check .
 - `src/osier/packages/` — installable standard-object packages (core, crm, case_management)
 - `src/osier/tenant.py` — tenant schema provisioning
 - `src/osier/bootstrap.py` — new tenant with core package, organization, first admin
+- `src/osier/query.py` — structured record queries (the only way agents read many records)
+- `src/osier/connectors/` — connector framework, SMTP and dev outbox, credential broker,
+  routing, approvals, audit (`service.py`)
+- `src/osier/mcp_server.py` — MCP tools for agents; `src/osier/cli.py` — `osier` command
+  (setup, approvals, connections); `src/osier/devconfig.py` — local configuration
 
 ## Rules
 
@@ -60,3 +66,8 @@ uv run ruff check . && uv run ruff format --check .
     engine (`PACKAGE_UPGRADE_UNSAFE`). New fields on existing objects need a
     default if they are required. System packages may depend only on system
     packages.
+12. **Secrets never pass through agents.** Credentials are entered through the CLI
+    (or, later, an OAuth flow), stored encrypted via `CredentialBroker`, and never
+    returned by any tool, record, or log.
+13. **MCP tools return one JSON object** (wrap lists as `{"items": [...], "count": n}`):
+    MCP clients split lists into separate blocks and show empty lists as nothing.

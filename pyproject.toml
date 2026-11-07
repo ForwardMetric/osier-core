@@ -12,6 +12,9 @@ dependencies = [
     "pydantic>=2.7",
 ]
 
+[project.scripts]
+osier = "osier.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

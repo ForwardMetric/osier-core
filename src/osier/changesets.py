@@ -1302,6 +1302,54 @@ class SchemaService:
         if row["base_schema_version"] != version:
             raise _Superseded(row["id"])
 
+    def get(self, change_set_id: Any) -> dict[str, Any]:
+        """A stored change set: status, summary, DDL, impact, blockers, who proposed it."""
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            row = cur.execute(
+                sql.SQL("SELECT * FROM {} WHERE id = %s").format(self._table("meta_change_sets")),
+                (uuid.UUID(str(change_set_id)),),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(
+                f"Change set {change_set_id} does not exist.", code="CHANGE_SET_NOT_FOUND"
+            )
+        return _change_set_view(row)
+
+    def pending(self) -> list[dict[str, Any]]:
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            rows = cur.execute(
+                sql.SQL("SELECT * FROM {} WHERE status = 'proposed' ORDER BY proposed_at").format(
+                    self._table("meta_change_sets")
+                )
+            ).fetchall()
+        return [_change_set_view(r) for r in rows]
+
+    def reject(self, change_set_id: Any) -> dict[str, Any]:
+        """Decline a proposal. People only."""
+        if not (self._principal.is_human or self._principal.actor_type is ActorType.SYSTEM):
+            raise ApprovalError(
+                "Proposals must be rejected by a person.", code="APPROVAL_REQUIRES_HUMAN"
+            )
+        with self._conn.transaction():
+            current = self.get(change_set_id)
+            if current["status"] != "proposed":
+                raise SchemaChangeError(
+                    f"Change set is {current['status']}, not proposed.",
+                    code="CHANGE_SET_NOT_PENDING",
+                )
+            self._conn.execute(
+                sql.SQL(
+                    "UPDATE {} SET status = 'rejected', approved_by = %s, approved_by_type = %s "
+                    "WHERE id = %s"
+                ).format(self._table("meta_change_sets")),
+                (
+                    self._principal.user_id,
+                    self._principal.actor_type.value,
+                    uuid.UUID(str(change_set_id)),
+                ),
+            )
+        return self.get(change_set_id)
+
     def _record_failure(self, change_set_id: uuid.UUID, error: dict[str, Any]) -> None:
         with self._conn.transaction():
             self._conn.execute(
@@ -1345,6 +1393,25 @@ class SchemaService:
                 (Jsonb(results), change_set_id),
             )
         return results
+
+
+def _change_set_view(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "change_set_id": str(row["id"]),
+        "status": row["status"],
+        "source": row["source"],
+        "summary": row["summary"],
+        "ddl": row["ddl"],
+        "impact": row["impact"],
+        "blockers": row["blockers"],
+        "can_apply": row["status"] == "proposed" and not row["blockers"],
+        "diff_hash": row["diff_hash"],
+        "proposed_by": str(row["proposed_by"]),
+        "proposed_by_type": row["proposed_by_type"],
+        "proposed_at": row["proposed_at"].isoformat(),
+        "post_apply": row["post_apply"],
+        "error": row["error"],
+    }
 
 
 class _Superseded(Exception):

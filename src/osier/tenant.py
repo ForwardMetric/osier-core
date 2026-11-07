@@ -66,7 +66,8 @@ _ENGINE_DDL = [
     CREATE TABLE {s}.meta_change_sets (
         id                     uuid PRIMARY KEY,
         status                 text NOT NULL
-                               CHECK (status IN ('proposed', 'applied', 'failed', 'superseded')),
+                               CHECK (status IN
+                               ('proposed', 'applied', 'failed', 'superseded', 'rejected')),
         source                 text NOT NULL
                                CHECK (source IN ('tenant', 'platform', 'upgrade', 'package')),
         operations             jsonb NOT NULL,

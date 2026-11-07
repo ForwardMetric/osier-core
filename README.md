@@ -2,50 +2,122 @@
 
 Headless, agent-native, metadata-driven business platform engine: standard
 objects plus tenant-defined objects and fields, compiled to real PostgreSQL
-tables, designed to be operated through AI chat and the Model Context Protocol.
+tables, operated through AI chat and the Model Context Protocol (MCP).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the design.
 
-## Status: Milestone 1 (engine core)
+## Run it locally with Claude
 
-Implemented:
+You need Python 3.12+, [uv](https://docs.astral.sh/uv/), and PostgreSQL 16
+(`docker compose up -d` starts one with the expected credentials).
 
-- Tenant schema provisioning (one schema per tenant, fully qualified SQL, empty `search_path`)
-- Metadata: objects, fields, lookups, schema versions, cached snapshots
-- Schema change sets: propose → validate → impact analysis → human approval → apply
-  - create / update / retire object; add / update / retire field
-  - picklist values, defaults, required, unique and indexed fields, history tracking
-  - blockers for data conflicts (e.g. required field on populated object)
-  - concurrent index builds after commit for existing tables
-  - standard items protected from tenant changes; `c__` prefix for custom items
-- Records: create, get, list (equality filters), update, retire
-  - validation generated from metadata, structured errors for agents
-  - optimistic concurrency (`row_version`), idempotency keys
-  - lookup integrity; retire with `restrict` / `cascade` / `set_null`
-  - field history (opt-in per field) with actor, agent, request id, provenance
-- Design rules: every object and field must be documented; generic names rejected;
-  schema.org `semantic_ref` links; advice for tenant proposals
-- Packages (standard objects as plugins), installed by human-approved change sets:
-  - `core` (always installed): Organization, User, Role, Role Assignment
-  - `crm`: Account, Contact, Lead, Opportunity, Activity
-  - `case_management`: Case, Case Comment
-- System packages (installed for every tenant, not removable) and optional packages
-- Package upgrades: additive changes applied automatically, tenant customizations kept,
-  unsafe changes refused
-- Object access levels: `open`, `protected` (people only), `engine_managed` (owning
-  engine service only)
-- `bootstrap_tenant`: new tenant with all system packages, organization, and first administrator
-
-Not yet (see roadmap in ARCHITECTURE.md): MCP server, permissions, confirmation
-tokens, views, multi-database placement, reporting, jobs and workflows.
-
-## Quick start
+**1. Install and create your local tenant**
 
 ```bash
 uv sync
-docker compose up -d
-uv run pytest -q
 ```
+
+```bash
+docker compose up -d
+```
+
+```bash
+uv run osier dev init --org "Acme Lending" --email you@example.com --name "Your Name" --packages crm,case_management
+```
+
+This creates a tenant in your local database (packages `core`, `integrations`,
+`crm`, `case_management`), writes `~/.config/osier/dev.json` and an encryption
+key `~/.config/osier/secret.key`, and prints the Claude setup below.
+
+**2. Add an email connection** (credentials are typed here, never in the chat)
+
+A safe fake that records emails instead of sending them:
+
+```bash
+uv run osier connect dev-outbox --name "Dev outbox"
+```
+
+Or real email through SMTP, e.g. Gmail with an
+[app password](https://support.google.com/accounts/answer/185833) (requires
+2-Step Verification on the Google account):
+
+```bash
+uv run osier connect smtp --name "Gmail" --host smtp.gmail.com --port 587 --from-address you@gmail.com --from-name "Your Name"
+```
+
+With more than one email connection, add `--default` to one of them, or tell
+Claude which connection to use.
+
+**3. Connect Claude**
+
+Claude Code (run from this directory):
+
+```bash
+claude mcp add osier --env OSIER_CONFIG=$HOME/.config/osier/dev.json -- $(pwd)/.venv/bin/osier mcp
+```
+
+Claude Desktop: add the block printed by `uv run osier client-setup` to
+`claude_desktop_config.json` under `"mcpServers"`, then restart Claude Desktop.
+
+**4. Work with it in Claude**, for example:
+
+> Add a lead: Jane Doe from Globex, jane@globex.example, found through our website.
+> Then send her a short follow-up email and log it on the lead.
+
+> Show me all leads from the web that are still new, newest first.
+
+> Add a Budget field to leads.
+
+**5. Approve what the agent proposes**
+
+Agents read and write records directly, but schema changes, package installs,
+and emails wait for you:
+
+```bash
+uv run osier approvals list
+```
+
+```bash
+uv run osier approvals approve <id>
+```
+
+Also: `osier status`, `osier connections list`, `osier outbox -v` (sent and
+captured emails), `osier approvals show <id>`, `osier approvals reject <id>`.
+
+## MCP tools
+
+| Tool | What it does |
+|---|---|
+| `describe_schema` | Objects, fields, types, allowed values, descriptions |
+| `query_records` | Filters (`eq`, `ne`, `gt`…, `in`, `contains`, `starts_with`, `is_null`), sorting, paging, lookup expansion |
+| `get_record`, `create_record`, `update_record`, `retire_record` | Record operations with validation and structured errors |
+| `get_record_history` | Field history: old/new values, person or agent, provenance |
+| `propose_schema_change`, `get_change_set` | Propose new objects or fields; you approve |
+| `list_packages`, `propose_install_packages` | Standard-object packages; you approve |
+| `list_connections`, `send_email`, `get_connector_call` | Email through your connections; sends wait for approval and are logged as activities |
+
+## What is implemented
+
+- **Engine:** tenant schemas with a central isolation guard; metadata compiled to
+  real tables; schema change sets with impact analysis, blockers, and human
+  approval; record validation, optimistic concurrency, idempotency, lookups and
+  retire rules, field history with provenance; enforced documentation and naming
+  rules with schema.org links.
+- **Packages:** system (`core`, `integrations`) and optional (`crm`,
+  `case_management`); install, uninstall, additive upgrades; object access levels
+  `open`, `protected`, `engine_managed`.
+- **Queries:** structured, validated, parameterized.
+- **Connectors:** MCP-shaped actions; SMTP and a development outbox; encrypted
+  credentials; capability + purpose routing; approval queue; audit; automatic CRM
+  logging.
+- **MCP server and CLI** for local use with Claude Desktop and Claude Code.
+
+Not yet (see the roadmap in ARCHITECTURE.md): remote MCP over HTTPS with OAuth
+(claude.ai connectors), role permissions, in-chat approval screens, views,
+marketing email, connectors for other apps (including registering existing MCP
+servers), multi-database placement, reporting, jobs and workflows.
+
+## Using the engine from Python
 
 ```python
 import psycopg
@@ -53,9 +125,7 @@ from osier import Session, bootstrap_tenant
 
 conn = psycopg.connect("postgresql://osier:osier@localhost:5432/osier_test", autocommit=True)
 boot = bootstrap_tenant(
-    conn,
-    organization_name="Acme Lending",
-    admin_email="ada@acme.test",
+    conn, organization_name="Acme Lending", admin_email="ada@acme.test",
     admin_display_name="Ada Lovelace",
 )
 admin = Session(conn, boot.tenant, boot.admin)
@@ -63,26 +133,24 @@ admin = Session(conn, boot.tenant, boot.admin)
 install = admin.packages.propose_install(["case_management"])  # adds crm automatically
 admin.packages.apply(install.id, diff_hash=install.diff_hash)
 
-proposal = admin.schema.propose(
-    [
-        {
-            "op": "add_field",
-            "object": "account",
-            "field": {
-                "api_name": "c__region",
-                "label": "Sales Region",
-                "type": "picklist",
-                "description": "Sales region responsible for the account, used for territory reporting.",
-                "options": {"values": ["emea", "amer", "apac"]},
-            },
-        },
-    ]
-)
-print(proposal.summary, proposal.ddl, proposal.blockers, proposal.impact)
-admin.schema.apply(proposal.id, diff_hash=proposal.diff_hash)
-
-acme = admin.records.create("account", {"name": "Acme", "c__region": "emea"})
+lead = admin.records.create("lead", {"family_name": "Doe", "company_name": "Globex"})
+print(admin.records.query({"object": "lead", "filters": [
+    {"field": "company_name", "op": "contains", "value": "glob"}]}))
 ```
+
+## Development
+
+```bash
+uv run pytest -q
+```
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+```
+
+Tests run against real PostgreSQL (`OSIER_TEST_DATABASE_URL`, default matches
+`docker-compose.yml`) and fail if it is not reachable.
+
 ## License
 
 MIT

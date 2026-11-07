@@ -1,0 +1,398 @@
+"""osier command line: local setup, the MCP server, approvals, and connections.
+
+Everything here runs as the configured *person* (not as an agent): approvals and
+credentials are entered here, never in the chat.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import shutil
+import sys
+import uuid
+from typing import Any
+
+from .bootstrap import bootstrap_tenant
+from .connectors import ConnectorService
+from .devconfig import DevConfig, config_path, default_config_dir, write_key_file
+from .errors import OsierError
+from .session import Session
+
+DEFAULT_DB = "postgresql://osier:osier@localhost:5432/osier_test"
+
+
+def _print(data: Any) -> None:
+    print(json.dumps(data, indent=2, default=str))
+
+
+def _admin(config: DevConfig) -> Session:
+    return config.session(config.admin())
+
+
+def _confirm(prompt: str, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+    return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+
+
+# ---- dev init -----------------------------------------------------------------------
+
+
+def cmd_dev_init(args: argparse.Namespace) -> None:
+    path = config_path()
+    if path.exists() and not args.force:
+        raise OsierError(
+            f"{path} already exists.",
+            code="ALREADY_CONFIGURED",
+            hint="Use --force to create a new tenant and overwrite the configuration.",
+        )
+    import psycopg
+
+    with psycopg.connect(args.database_url, autocommit=True) as conn:
+        boot = bootstrap_tenant(
+            conn,
+            organization_name=args.org,
+            admin_email=args.email,
+            admin_display_name=args.name,
+        )
+        key_file = default_config_dir() / "secret.key"
+        write_key_file(key_file)
+        config = DevConfig(
+            database_url=args.database_url,
+            tenant_id=str(boot.tenant.tenant_id),
+            tenant_schema=boot.tenant.schema,
+            organization_id=str(boot.organization_id),
+            admin_user_id=str(boot.admin_user_id),
+            agent_user_id=str(uuid.uuid5(boot.admin_user_id, "mcp-agent")),
+            key_file=str(key_file),
+            allow_private_network=args.allow_private_network,
+        )
+        session = config.session(config.admin(), conn)
+        packages = [p for p in (args.packages or "").split(",") if p]
+        if packages:
+            proposal = session.packages.propose_install(packages)
+            session.packages.apply(proposal.id, diff_hash=proposal.diff_hash)
+        saved = config.save()
+    print(f"Created tenant {boot.tenant.schema} for {args.org}.")
+    print(f"Installed packages: {', '.join(['core', 'integrations', *packages])}")
+    print(f"Configuration: {saved}")
+    print(f"Secret key:    {key_file}  (keep it; credentials are encrypted with it)")
+    print()
+    _print_client_setup()
+
+
+def _print_client_setup() -> None:
+    exe = shutil.which("osier") or f"{sys.executable} -m osier"
+    command, *rest = exe.split()
+    args = [*rest, "mcp"]
+    env = {"OSIER_CONFIG": str(config_path())}
+    print('Claude Desktop: add this to claude_desktop_config.json under "mcpServers":')
+    _print({"osier": {"command": command, "args": args, "env": env}})
+    print()
+    print("Claude Code:")
+    print(f"  claude mcp add osier --env OSIER_CONFIG={config_path()} -- {exe} mcp")
+
+
+# ---- status / mcp -----------------------------------------------------------------------
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    session = _admin(config)
+    _print(
+        {
+            "config": str(config_path()),
+            "tenant_schema": config.tenant_schema,
+            "packages": {p["package"]: p["status"] for p in session.packages.available()},
+            "objects": [o["api_name"] for o in session.describe_schema()["objects"]],
+            "pending_approvals": len(session.schema.pending())
+            + len(ConnectorService(session, config.broker()).pending_calls()),
+        }
+    )
+
+
+def cmd_mcp(args: argparse.Namespace) -> None:
+    from .mcp_server import run
+
+    run(DevConfig.load())
+
+
+def cmd_client_setup(args: argparse.Namespace) -> None:
+    _print_client_setup()
+
+
+# ---- approvals ---------------------------------------------------------------------------
+
+
+def cmd_approvals_list(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    session = _admin(config)
+    changes = session.schema.pending()
+    calls = ConnectorService(session, config.broker()).pending_calls()
+    if not changes and not calls:
+        print("Nothing is waiting for approval.")
+        return
+    for c in changes:
+        print(
+            f"[schema] {c['change_set_id']}  ({c['source']}, proposed by {c['proposed_by_type']})"
+        )
+        for line in c["summary"]:
+            print(f"    {line}")
+        for b in c["blockers"]:
+            print(f"    BLOCKER: {b['message']}")
+    for c in calls:
+        print(
+            f"[action] {c['call_id']}  ({c['capability']}, requested by {c['requested_by_type']})"
+        )
+        print(f"    {c['summary']}")
+
+
+def _find(session: Session, config: DevConfig, item_id: str) -> tuple[str, dict[str, Any]]:
+    try:
+        return "schema", session.schema.get(item_id)
+    except (OsierError, ValueError):
+        pass
+    try:
+        connectors = ConnectorService(session, config.broker())
+        call = connectors.get_call(item_id)
+        call["arguments"] = next(
+            (c["arguments"] for c in connectors.pending_calls() if c["call_id"] == call["call_id"]),
+            None,
+        )
+        return "action", call
+    except OsierError:
+        raise OsierError(f"Nothing to approve with id {item_id}.", code="NOT_FOUND") from None
+
+
+def cmd_approvals_show(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    kind, item = _find(_admin(config), config, args.id)
+    item.pop("diff_hash", None)
+    _print({"kind": kind, **item})
+
+
+def cmd_approvals_approve(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    session = _admin(config)
+    kind, item = _find(session, config, args.id)
+    if kind == "schema":
+        print("\n".join(item["summary"]))
+        for ddl in item["ddl"]:
+            print(f"  SQL: {ddl}")
+        if item["blockers"]:
+            _print(item["blockers"])
+            raise OsierError(
+                "This change set has blockers and cannot be applied.", code="CHANGE_SET_BLOCKED"
+            )
+        if not _confirm("Apply this change?", args.yes):
+            print("Not applied.")
+            return
+        if item["source"] == "package":
+            result = session.packages.apply(uuid.UUID(args.id), diff_hash=item["diff_hash"])
+        else:
+            result = session.schema.apply(uuid.UUID(args.id), diff_hash=item["diff_hash"])
+        _print(result.to_dict())
+    else:
+        print(item["summary"])
+        if item.get("arguments"):
+            print(f"  Body:\n{item['arguments'].get('body_text', '')}")
+        if not _confirm("Run this action now?", args.yes):
+            print("Not run.")
+            return
+        _print(
+            ConnectorService(
+                session, config.broker(), allow_private_network=config.allow_private_network
+            ).approve(args.id)
+        )
+
+
+def cmd_approvals_reject(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    session = _admin(config)
+    kind, _ = _find(session, config, args.id)
+    if kind == "schema":
+        _print(session.schema.reject(args.id))
+    else:
+        _print(ConnectorService(session, config.broker()).reject(args.id))
+
+
+# ---- connections --------------------------------------------------------------------------
+
+
+def _connectors(config: DevConfig) -> ConnectorService:
+    return ConnectorService(
+        _admin(config), config.broker(), allow_private_network=config.allow_private_network
+    )
+
+
+def cmd_connect_smtp(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    password = os.environ.get("OSIER_SMTP_PASSWORD") or getpass.getpass(
+        f"SMTP password for {args.username or args.from_address}: "
+    )
+    connection = _connectors(config).create_connection(
+        "smtp",
+        args.name,
+        purpose=args.purpose,
+        scope=args.scope,
+        is_default=args.default,
+        approval="not_required" if args.auto_approve else "required",
+        config={
+            "host": args.host,
+            "port": args.port,
+            "security": args.security,
+            "username": args.username or args.from_address,
+            "from_address": args.from_address,
+            "from_name": args.from_name,
+        },
+        secrets={"password": password},
+    )
+    print("Connected and verified.")
+    _print(connection)
+
+
+def cmd_connect_outbox(args: argparse.Namespace) -> None:
+    config = DevConfig.load()
+    _print(
+        _connectors(config).create_connection(
+            "dev_outbox",
+            args.name,
+            purpose="transactional",
+            is_default=args.default,
+            approval="not_required" if args.auto_approve else "required",
+            config={"from_address": args.from_address},
+        )
+    )
+
+
+def cmd_connections_list(args: argparse.Namespace) -> None:
+    _print(_connectors(DevConfig.load()).list_connections())
+
+
+def cmd_outbox(args: argparse.Namespace) -> None:
+    """Show recent connector calls, including messages captured by the dev outbox."""
+    config = DevConfig.load()
+    from psycopg import sql
+    from psycopg.rows import dict_row
+
+    session = _admin(config)
+    with session.conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute(
+            sql.SQL(
+                "SELECT id, status, summary, arguments, result, created_at FROM {} "
+                "ORDER BY created_at DESC LIMIT %s"
+            ).format(sql.Identifier(config.tenant_schema, "connector_calls")),
+            (args.limit,),
+        ).fetchall()
+    for r in rows:
+        print(f"{r['created_at']:%Y-%m-%d %H:%M}  {r['status']:<18} {r['summary']}  ({r['id']})")
+        if args.verbose:
+            print(f"    {r['arguments'].get('body_text', '')[:500]}")
+
+
+# ---- parser ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="osier", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    dev = sub.add_parser("dev", help="local development setup").add_subparsers(
+        dest="dev_command", required=True
+    )
+    init = dev.add_parser("init", help="create a local tenant and configuration")
+    init.add_argument("--database-url", default=os.environ.get("OSIER_DATABASE_URL", DEFAULT_DB))
+    init.add_argument("--org", required=True, help="your organization's name")
+    init.add_argument("--email", required=True, help="your email (the first administrator)")
+    init.add_argument("--name", required=True, help="your display name")
+    init.add_argument("--packages", default="crm", help="comma-separated, e.g. crm,case_management")
+    init.add_argument(
+        "--allow-private-network",
+        action="store_true",
+        help="allow connectors to reach local/private hosts (local testing only)",
+    )
+    init.add_argument("--force", action="store_true")
+    init.set_defaults(func=cmd_dev_init)
+
+    sub.add_parser("status", help="show tenant, packages, and pending approvals").set_defaults(
+        func=cmd_status
+    )
+    sub.add_parser("mcp", help="run the MCP server (stdio)").set_defaults(func=cmd_mcp)
+    sub.add_parser("client-setup", help="print Claude Desktop / Claude Code setup").set_defaults(
+        func=cmd_client_setup
+    )
+
+    approvals = sub.add_parser("approvals", help="review and approve agent proposals")
+    asub = approvals.add_subparsers(dest="approvals_command", required=True)
+    asub.add_parser("list").set_defaults(func=cmd_approvals_list)
+    for name, func in (
+        ("show", cmd_approvals_show),
+        ("approve", cmd_approvals_approve),
+        ("reject", cmd_approvals_reject),
+    ):
+        p = asub.add_parser(name)
+        p.add_argument("id")
+        if name == "approve":
+            p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+        p.set_defaults(func=func)
+
+    connect = sub.add_parser("connect", help="connect an external account").add_subparsers(
+        dest="connect_command", required=True
+    )
+    smtp = connect.add_parser("smtp", help="email through an SMTP server")
+    smtp.add_argument("--name", required=True)
+    smtp.add_argument("--host", required=True, help="e.g. smtp.gmail.com")
+    smtp.add_argument("--port", type=int, default=587)
+    smtp.add_argument("--security", choices=["starttls", "ssl", "none"], default="starttls")
+    smtp.add_argument("--username")
+    smtp.add_argument("--from-address", required=True)
+    smtp.add_argument("--from-name")
+    smtp.add_argument("--purpose", choices=["transactional", "marketing"], default="transactional")
+    smtp.add_argument("--scope", choices=["organization", "user"], default="organization")
+    smtp.add_argument("--default", action="store_true")
+    smtp.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="send without asking for approval (use with care)",
+    )
+    smtp.set_defaults(func=cmd_connect_smtp)
+    outbox = connect.add_parser("dev-outbox", help="fake email connection that sends nothing")
+    outbox.add_argument("--name", default="Dev outbox")
+    outbox.add_argument("--from-address", default="agent@example.test")
+    outbox.add_argument("--default", action="store_true")
+    outbox.add_argument("--auto-approve", action="store_true")
+    outbox.set_defaults(func=cmd_connect_outbox)
+
+    conns = sub.add_parser("connections", help="list connections").add_subparsers(
+        dest="connections_command", required=True
+    )
+    conns.add_parser("list").set_defaults(func=cmd_connections_list)
+
+    out = sub.add_parser("outbox", help="recent emails and connector actions")
+    out.add_argument("--limit", type=int, default=20)
+    out.add_argument("-v", "--verbose", action="store_true")
+    out.set_defaults(func=cmd_outbox)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        args.func(args)
+    except OsierError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint: {exc.hint}", file=sys.stderr)
+        if exc.details:
+            print(json.dumps(exc.details, indent=2, default=str), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
