@@ -1,6 +1,6 @@
 # osier-core — Architecture
 
-> Status: **Draft v0.1** — decisions agreed in planning; open questions in §15.
+> Status: **Draft v0.1** — decisions agreed in planning; open questions in §16.
 > This document is the source of truth for design decisions. Changes to a
 > decision should update this file in the same pull request as the code.
 
@@ -538,7 +538,7 @@ include the expected type or allowed values.
 - AI-generated arbitrary code in views is **not** allowed in v1 (security,
   permissions, upgrade safety). A sandboxed custom-HTML option may be added
   later if needed.
-- Host support for MCP Apps varies and must be verified per host (§15).
+- Host support for MCP Apps varies and must be verified per host (§16).
 
 ### 10.5 Our own chat client (later)
 
@@ -718,7 +718,138 @@ backfills).
 
 ---
 
-## 13. Technology stack
+## 13. Connectors
+
+Connectors let agents act in external systems (email, marketing platforms,
+other SaaS tools) as part of their work.
+
+### 13.1 Concepts
+
+| Concept | What it is | Example |
+|---|---|---|
+| **Connector type** | Definition of an external system: auth method, non-secret config, actions, (later) triggers and data mappings | Gmail, Klaviyo, "Generic HTTP API" |
+| **Connection** | A tenant's instance of a connector type, with credentials | "Acme newsletter (Klaviyo)", "Ada's mailbox (Gmail)" |
+| **Action** | A callable operation, exposed to agents as a tool | `send_email`, `add_subscriber` |
+| **Capability** | A provider-neutral contract several connector types implement | `email.send`, `email.read_inbox`, `marketing.audience`, `marketing.campaign` |
+| **Purpose** | The tenant's label for what a connection is used for | `transactional`, `marketing` |
+
+Agent instructions and workflows target **capabilities and purposes**, not
+providers, so switching providers does not break them. Every action and
+parameter needs a real description (same design rules as objects, §4.7), and
+each action declares a **side-effect level**: `read`, `write`, or
+`external_send`.
+
+### 13.2 Runtimes: standard and custom connectors
+
+| Runtime | Written by | How it runs | Use |
+|---|---|---|---|
+| **Native** | Platform team, git-reviewed (like packages) | Python adapter in the platform | Standard connectors with complex auth or logic |
+| **Declarative HTTP** | Tenant admin, through chat | The engine calls the HTTP API described by the definition. **No tenant code runs.** | Custom connectors |
+| **Remote MCP server** | Anyone | The engine relays calls to a registered MCP server | Reusing the MCP ecosystem (open question, §16) |
+
+Standard connector types live in code (and in the database catalog from M5,
+like packages). Custom connector types are registered through approved change
+sets and stored in `meta_connector_types`.
+
+### 13.3 Multiple connections per tenant
+
+A tenant may have any number of connections, including several for the same
+capability and several email platforms at once (e.g. Gmail for one-to-one
+mail, SendGrid for system notifications, Klaviyo and Mailchimp for
+marketing). The engine chooses a connection from **capability + purpose +
+acting user**:
+
+1. a connection the agent names explicitly, else
+2. the tenant's default connection for that capability and purpose, else
+3. a structured error listing the matching connections (never a silent guess).
+
+Connections are **organization-wide** (one company account) or **per user**
+(each person's own mailbox; the acting user's connection is used). Automatic
+routing rules (by region, brand, failover) are deferred until needed.
+
+### 13.4 Purpose is a safety rule
+
+| | `transactional` | `marketing` |
+|---|---|---|
+| Recipients | One-to-one, tied to a record (case, deal, reply) | Lists and audiences |
+| Consent | Not checked for genuine service messages | **Enforced by the engine** (`has_opted_out_of_email`, consent records) |
+| Unsubscribe link | Not required | **Mandatory** |
+| Approval | Per tenant policy | **Bulk sends always need human confirmation** |
+| Recipients per call | Small limit | Large, rate-limited |
+
+The engine cannot reliably tell whether a message *is* marketing; the
+structural limits above (recipient caps, record ties, rate limits, audit)
+make misuse of the transactional path hard and visible, not impossible.
+Legal treatment (CAN-SPAM, GDPR, ePrivacy) must be confirmed with counsel.
+
+### 13.5 Storage
+
+**Engine tables** (tenant schema, written only by connector code):
+
+| Table | Purpose |
+|---|---|
+| `meta_connector_types` | Custom connector definitions (key `c__…`, version, runtime, definition, status, checksum); changed only through approved change sets |
+| `connector_credentials` | **Encrypted** OAuth tokens and API keys (connection, kind, ciphertext, key id, expiry, scopes, rotation/revocation) |
+| `connector_oauth_states` | Short-lived OAuth sign-in state (hashed state token, user, encrypted PKCE verifier, expiry) |
+| `connector_calls` | **Append-only** audit of every call (connection, action, capability, purpose, actor/agent/on-behalf-of, request id, idempotency key, redacted summary, recipient count, outcome, error, duration, external id); partitioned by month |
+| `connector_policies` | Tenant rules: approval requirement, recipient and rate limits, which objects/fields may leave the platform; changes need human approval (may merge into M3 permission tables) |
+
+Reused: `meta_idempotency` (namespaced) so retried sends do not send twice;
+the shared approval/confirmation-token table planned for M3 (§10.2) for
+external sends.
+
+**Object:** `connection` (name, connector type, purpose, scope, owning user,
+default flag, status, last error, last used, connected at) in a **system
+package**, marked **engine-managed** (§13.6): visible and queryable like any
+object, changed only by connector code.
+
+**Credentials decision:** credentials are stored **in the tenant schema**,
+encrypted with keys held **outside the database** (cloud key management
+service, to be chosen), so a database dump alone reveals no secrets and a
+tenant's credentials move with its schema. Access goes through a
+credential-broker interface so a dedicated vault can replace this later
+without changing connector code. Agents, logs, and `describe_schema` never
+see secrets.
+
+### 13.6 Foundations this needs
+
+1. **System packages vs optional packages.** System packages (e.g. `core`, and
+   an `integrations` package holding `connection`) are installed in the initial
+   install phase, can never be uninstalled, and are upgraded automatically.
+   Optional packages (`crm`, `case_management`, …) are chosen by the tenant.
+2. **Package upgrades** (diff installed vs new version; additive changes
+   applied automatically), because engine releases will require newer system
+   package versions in every tenant.
+3. **A third protection level for objects:**
+
+   | Level | Writes through the records API | Examples |
+   |---|---|---|
+   | `open` | Anyone with permission | account, support_case |
+   | `protected` | People only, not agents | role, user_role |
+   | `engine_managed` | Nobody; only the owning engine service | connection |
+
+### 13.7 Safety
+
+- **Approval by side-effect level:** reads run freely; writes follow policy;
+  external sends need confirmation by default, bulk sends always.
+- **Outbound data obeys field permissions**, plus per-connector rules on which
+  objects and fields may leave the platform.
+- **External content is untrusted data:** email bodies and API responses are
+  marked untrusted in tool results and can never approve anything.
+- **Network protection for custom HTTP connectors:** block private and
+  internal addresses and cloud metadata endpoints, per-connector domain
+  allowlists, outbound proxy, response size and time limits (SSRF defense).
+- **Audit every call;** rate limits, retries with idempotency keys,
+  timeouts; long operations (syncs, campaign sends) use the job queue (M7).
+
+### 13.8 Deferred
+
+Inbound webhooks and triggers (M7), data sync and its state (M7), rate-limit
+counters (when rate limiting is built), automatic routing rules.
+
+---
+
+## 14. Technology stack
 
 | Concern | Choice |
 |---|---|
@@ -743,12 +874,13 @@ the implementation is written from first principles.
 
 ---
 
-## 14. Roadmap
+## 15. Roadmap
 
 | Milestone | Scope |
 |---|---|
 | **M1 — Engine core** | Metadata tables; DDL compiler with naming/quoting rules; change sets (propose / validate / impact / apply); standard package with Account, Contact, Opportunity; record create/read/update/retire with generated validators; field history and record events; tests against real Postgres. One tenant schema, always addressed by fully qualified names. |
 | **M2 — MCP server** | Read, write, query tools; propose/apply schema changes; structured errors; tested in a real MCP host. |
+| **M2.5 — Connector foundation** | Engine tables (§13.5), credential broker with encryption, `connection` object, capability and purpose routing, action execution with policy and audit, one native connector, declarative HTTP runtime with network protections. Depends on system packages, package upgrades, and the `engine_managed` level (§13.6), which are built first. |
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.4). |
@@ -761,7 +893,7 @@ tenant.
 
 ---
 
-## 15. Open questions
+## 16. Open questions
 
 | # | Question | Why it matters |
 |---|---|---|
@@ -777,10 +909,14 @@ tenant.
 | 8 | Are workflows metadata-driven too? | **Decided:** yes — triggers, conditions, and actions as metadata (§12.2); built in M7. |
 | 9 | Reinstalling an uninstalled package: reactivate its retired objects, or start fresh? | Open; blocked with `PACKAGE_REINSTALL_NOT_SUPPORTED` for now. |
 | 10 | How do engine principals map to `app_user` records once authentication exists? | Bootstrap uses the admin's `app_user` id as the principal id; M3 formalizes this. |
+| 11 | First email connectors: which mailbox (Gmail / Microsoft 365), transactional (SendGrid / Postmark), and marketing (Klaviyo / Mailchimp) providers? | Open. |
+| 12 | Custom connectors: declarative HTTP only, or also registering remote MCP servers? | Open. |
+| 13 | Default approval policy for external sends: all sends, or only bulk sends? | Open; proposed default is confirm all external sends until there is a track record. |
+| 14 | Which key management service holds credential encryption keys? | Open; decided with hosting. Credentials themselves live in the tenant schema (§13.5). |
 
 ---
 
-## 16. Risks and data gaps
+## 17. Risks and data gaps
 
 | Risk | Status / mitigation |
 |---|---|
