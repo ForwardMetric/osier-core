@@ -596,35 +596,70 @@ def cmd_workflows_start(args: argparse.Namespace) -> None:
     _print(_admin(DevConfig.load()).workflows.start(args.name, inputs, background=args.background))
 
 
-def cmd_worker(args: argparse.Namespace) -> None:
-    import logging
-
-    from .context import Principal
+def _worker(config: DevConfig) -> Any:
     from .jobs import Worker
 
+    return Worker(config.database_url, lambda: [config.tenant], connect=config.connect)
+
+
+def cmd_worker(args: argparse.Namespace) -> None:
+    import asyncio
+    import logging
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    config = DevConfig.load()
-    system = config.session(Principal.system("worker"))
-    worker = Worker(lambda: [system])
+    worker = _worker(DevConfig.load())
     if args.once:
-        _print(worker.run_until_idle())
+        _print(asyncio.run(worker.run_until_idle()))
         return
-    print(f"osier worker {worker.worker_id}: running jobs and triggers (Ctrl+C to stop)")
+    print("osier worker: running jobs and workflow triggers (Ctrl+C to stop)")
     try:
-        worker.run_forever(poll_seconds=args.poll)
+        asyncio.run(worker.run_forever(poll_seconds=args.poll))
     except KeyboardInterrupt:
         print("stopped")
 
 
 def cmd_jobs_list(args: argparse.Namespace) -> None:
-    from .jobs import JobService
+    from .jobs import list_jobs
 
-    for j in JobService(_admin(DevConfig.load())).list(status=args.status, limit=args.limit):
-        error = (j["last_error"] or {}).get("message", "")
+    config = DevConfig.load()
+    for j in list_jobs(config.database_url, _admin(config), status=args.status, limit=args.limit):
         print(
-            f"{j['id']}  {j['kind']:<18} {j['status']:<10} attempts {j['attempts']}/"
-            f"{j['max_attempts']}  {j['created_at']}  {error[:60]}"
+            f"{j['id']:>6}  {j['task']:<18} {j['status']:<10} attempts {j['attempts']}  {j['args']}"
         )
+
+
+def cmd_jobs_settings(args: argparse.Namespace) -> None:
+    from .jobs import JobSettingsService, describe_settings
+
+    session = _admin(DevConfig.load())
+    service = JobSettingsService(session)
+    if not args.set:
+        current = service.get().model_dump()
+        for name, info in describe_settings().items():
+            limits = (
+                f" ({info['minimum']}-{info['maximum']})"
+                if "minimum" in info
+                else f" ({'/'.join(info['enum'])})"
+                if "enum" in info
+                else ""
+            )
+            print(f"{name:<20} {current[name]!s:<8} {info['description']}{limits}")
+        return
+    changes: dict[str, Any] = {}
+    for pair in args.set:
+        key, _, value = pair.partition("=")
+        changes[key] = {"true": True, "false": False}.get(value.lower(), value)
+    preview = service.preview(changes)
+    for key, change in preview["changes"].items():
+        print(f"  {key}: {change['from']} -> {change['to']}")
+    if not preview["changes"]:
+        print("No change.")
+        return
+    if not _confirm("Apply?", args.yes):
+        print("Not changed.")
+        return
+    service.update(changes)
+    print("Saved. A running worker picks this up within a few seconds.")
 
 
 def cmd_workflows_runs(args: argparse.Namespace) -> None:
@@ -896,6 +931,10 @@ def build_parser() -> argparse.ArgumentParser:
     jl.add_argument("--status")
     jl.add_argument("--limit", type=int, default=30)
     jl.set_defaults(func=cmd_jobs_list)
+    js = jobs.add_parser("settings", help="show or change this organization's job settings")
+    js.add_argument("--set", action="append", help="NAME=VALUE, e.g. concurrency=4")
+    js.add_argument("-y", "--yes", action="store_true")
+    js.set_defaults(func=cmd_jobs_settings)
 
     out = sub.add_parser("outbox", help="recent emails and connector actions")
     out.add_argument("--limit", type=int, default=20)

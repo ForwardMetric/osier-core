@@ -874,6 +874,56 @@ def build_server(
         result = sessions.person().workflows.set_status(name, status)
         return {**result, "confirmed_by_user": True}
 
+    @server.tool(
+        description="The organization's background job settings (concurrency, retries, "
+        "pause, retention) with their limits.",
+        annotations=READ,
+    )
+    @_tool_errors
+    def get_job_settings() -> dict[str, Any]:
+        from .jobs import JobSettingsService, describe_settings
+
+        return {
+            "settings": JobSettingsService(sessions.agent()).get().model_dump(),
+            "limits": describe_settings(),
+        }
+
+    def confirm_job_settings(changes: dict[str, Any], ctx: Context) -> Elicit[Confirm] | None:
+        from .jobs import JobSettingsService
+
+        if not _can_prompt(ctx):
+            return None
+        try:
+            preview = JobSettingsService(sessions.agent()).preview(changes)
+        except OsierError:
+            return None
+        lines = "\n".join(f"- {k}: {v['from']} -> {v['to']}" for k, v in preview["changes"].items())
+        return Elicit(f"Change background job settings?\n\n{lines or 'No change.'}", Confirm)
+
+    @server.tool(
+        description='Change background job settings, e.g. {"concurrency": 4} or '
+        '{"paused": true}. See get_job_settings for names and limits. Needs jobs.manage; '
+        "the user confirms.",
+        annotations=WRITE,
+    )
+    @_tool_errors
+    def update_job_settings(
+        changes: dict[str, Any],
+        decision: Annotated[Confirm | None, Resolve(confirm_job_settings)] = None,
+    ) -> dict[str, Any]:
+        from .jobs import JobSettingsService
+
+        preview = JobSettingsService(sessions.agent()).preview(changes)
+        if not _approved(decision):
+            raise OsierError(
+                "The change was not confirmed by the user.",
+                code="CONFIRMATION_DECLINED" if decision else "CONFIRMATION_UNAVAILABLE",
+                hint="Or use `osier jobs settings --set NAME=VALUE`.",
+                details={"preview": preview},
+            )
+        result = JobSettingsService(sessions.person()).update(changes)
+        return {**result, "confirmed_by_user": True}
+
     # ---- identity, approvals, app connections ----------------------------------------
 
     @server.tool(

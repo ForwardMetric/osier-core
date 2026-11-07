@@ -410,33 +410,12 @@ _ENGINE_MIGRATIONS = [
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS {s}.jobs (
-        id               uuid PRIMARY KEY,
-        kind             text NOT NULL,
-        payload          jsonb NOT NULL DEFAULT '{{}}',
-        status           text NOT NULL DEFAULT 'queued'
-                         CHECK (status IN ('queued', 'running', 'succeeded', 'failed',
-                                           'cancelled')),
-        priority         integer NOT NULL DEFAULT 0,
-        attempts         integer NOT NULL DEFAULT 0,
-        max_attempts     integer NOT NULL DEFAULT 3,
-        run_after        timestamptz NOT NULL DEFAULT now(),
-        locked_by        text,
-        locked_until     timestamptz,
-        last_error       jsonb,
-        idempotency_key  text UNIQUE,
-        run_as_user      uuid NOT NULL,
-        run_as_type      text NOT NULL,
-        on_behalf_of     uuid,
-        agent_id         text,
-        source           text NOT NULL DEFAULT 'job',
-        created_at       timestamptz NOT NULL DEFAULT now(),
-        started_at       timestamptz,
-        finished_at      timestamptz
+    CREATE TABLE IF NOT EXISTS {s}.meta_job_settings (
+        id          integer PRIMARY KEY CHECK (id = 1),
+        settings    jsonb NOT NULL,
+        updated_by  uuid NOT NULL,
+        updated_at  timestamptz NOT NULL DEFAULT now()
     )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS jobs_claim ON {s}.jobs (status, run_after)
     """,
     """
     CREATE TABLE IF NOT EXISTS {s}.workflow_schedules (
@@ -493,6 +472,8 @@ _SCHEMA_ONCE: list[tuple[str, list[str]]] = [
             "(status IN ('queued', 'running', 'waiting', 'succeeded', 'rejected', 'failed', "
             "'cancelled'))",
             "ALTER TABLE {s}.workflow_runs ADD COLUMN IF NOT EXISTS trigger jsonb",
+            "ALTER TABLE {s}.workflow_runs ADD COLUMN IF NOT EXISTS deferred_at timestamptz",
+            "ALTER TABLE {s}.workflow_runs ADD COLUMN IF NOT EXISTS resume_with jsonb",
         ],
     ),
 ]
@@ -524,6 +505,10 @@ _DATA_MIGRATIONS: list[tuple[str, list[tuple[str, str]]]] = [
             for role in ("admin", "developer")
             for permission in ("skills.manage", "tools.manage", "workflows.manage")
         ],
+    ),
+    (
+        "2026-11-grant-jobs-manage",
+        [(role, "jobs.manage") for role in ("admin", "developer")],
     ),
 ]
 
@@ -577,6 +562,9 @@ def upgrade_engine_tables(conn: psycopg.Connection, tenant: Tenant) -> None:
                     )
         _run_schema_once(conn, tenant)
         _run_data_migrations(conn, tenant)
+    from .jobs import install_queue
+
+    install_queue(conn, tenant)
 
 
 def provision_tenant(conn: psycopg.Connection, tenant_id: uuid.UUID | None = None) -> Tenant:
@@ -594,4 +582,7 @@ def provision_tenant(conn: psycopg.Connection, tenant_id: uuid.UUID | None = Non
 def drop_tenant(conn: psycopg.Connection, tenant: Tenant) -> None:
     """Irreversibly delete a tenant schema. Intended for tests and tooling only."""
     validate_tenant_schema(tenant.schema)
+    from .jobs import drop_queue
+
+    drop_queue(conn, tenant)
     conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(tenant.schema)))

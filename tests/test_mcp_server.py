@@ -521,3 +521,15 @@ def test_member_cannot_define_workflows_in_chat(server, config, conn, make_user)
     member_server = build_server(config, sessions=Sessions(config, conn, member.user_id))
     refused = call(member_server, "save_workflow", _answer="accept", definition=_workflow())
     assert refused["error"]["code"] == "MISSING_PERMISSION" and prompts == []
+
+
+def test_job_settings_in_chat(server):
+    shown = call(server, "get_job_settings")
+    assert shown["settings"]["concurrency"] == 2 and shown["limits"]["concurrency"]["maximum"] == 10
+    assert call(server, "update_job_settings", changes={"concurrency": 4})["error"]["code"] == (
+        "CONFIRMATION_UNAVAILABLE"
+    )
+    done = call(server, "update_job_settings", _answer="accept", changes={"concurrency": 4})
+    assert done["settings"]["concurrency"] == 4 and "concurrency: 2 -> 4" in prompts[0]
+    bad = call(server, "update_job_settings", _answer="accept", changes={"concurrency": 99})
+    assert bad["error"]["code"] == "JOB_SETTINGS_INVALID" and prompts == []

@@ -200,6 +200,15 @@ uv run osier worker
 Runs from record changes use the permissions of whoever made the change; scheduled
 runs use the permissions of the person who saved the workflow. Changes made by
 workflows never trigger other workflows. `osier jobs list` shows background jobs.
+
+Each organization has its own job queue (on Procrastinate) and its own settings:
+how many jobs run at once, retries and their wait, pausing, and how long finished
+jobs are kept, within platform limits. Change them in chat ("run up to 4 jobs at
+once") or from the terminal:
+
+```bash
+uv run osier jobs settings --set concurrency=4
+```
 Adding and changing skills needs the Developer or Admin role; everyone can use
 the skills shared with them.
 
@@ -241,8 +250,8 @@ the skills shared with them.
   versions, visibility, import from GitHub, and `osier skills` commands.
 - **Workflows:** declarative definitions (no code) run on LangGraph, with record
   steps, conditions, and approvals that pause the run; checkpoints in the tenant's
-  schema; record and schedule triggers; a Postgres job queue and `osier worker`
-  with leases and retries; `osier workflows` and `osier jobs` commands.
+  schema; record and schedule triggers; a job queue per organization on Procrastinate
+  with configurable concurrency and retries; `osier worker`; `osier workflows` and `osier jobs` commands.
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
 Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone

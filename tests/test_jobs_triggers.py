@@ -1,14 +1,15 @@
 """Background jobs, the worker, and workflow triggers (record events, schedules)."""
 
+import asyncio
 import datetime as dt
 
+import psycopg
 import pytest
-from conftest import agent_for
+from conftest import DATABASE_URL, agent_for
 from psycopg import sql
 
-from osier.context import Principal
 from osier.errors import OsierError
-from osier.jobs import HANDLERS, JobService, Worker
+from osier.jobs import JobSettingsService, Worker, jobs_schema, list_jobs
 from osier.workflows import WorkflowError
 
 ON_NEW_LEAD = {
@@ -35,10 +36,21 @@ ON_NEW_LEAD = {
 }
 
 
+class _SyncWorker:
+    def __init__(self, tenant):
+        self.worker = Worker(DATABASE_URL, lambda: [tenant])
+
+    def run_until_idle(self):
+        return asyncio.run(self.worker.run_until_idle())
+
+
 @pytest.fixture
 def worker(crm):
-    system = crm.as_principal(Principal.system("worker"))
-    return Worker(lambda: [system], worker_id="test-worker")
+    return _SyncWorker(crm.tenant)
+
+
+def jobs_table(crm):
+    return sql.Identifier(jobs_schema(crm.tenant), "procrastinate_jobs")
 
 
 def runs(session):
@@ -244,44 +256,82 @@ def test_background_start_and_decision(crm, worker):
     assert crm.records.get("lead", lead["id"])["status"] == "qualified"
 
 
-def test_unexpected_errors_retry_with_backoff_then_fail(crm, worker, monkeypatch):
+def test_unexpected_errors_retry_then_fail_the_run(crm, conn, worker, monkeypatch):
     from test_workflows import QUALIFY
 
+    from osier.workflows import WorkflowService
+
     crm.workflows.save(QUALIFY)
+    JobSettingsService(crm).update({"max_attempts": 2, "retry_wait_seconds": 1})
     lead = crm.records.create("lead", {"family_name": "Doe"})
     run = crm.workflows.start("qualify-lead", {"lead_id": lead["id"]}, background=True)
     calls = []
 
-    def boom(session, payload, job):
-        calls.append(job["attempts"])
+    def boom(self, run_id):
+        calls.append(run_id)
         raise RuntimeError("database went away")
 
-    monkeypatch.setitem(HANDLERS, "workflow.execute", boom)
-    jobs = JobService(crm.as_principal(Principal.system("worker")))
-    table = sql.Identifier(crm.tenant.schema, "jobs")
-    for _ in range(3):
-        worker.run_until_idle()
-        crm.conn.execute(sql.SQL("UPDATE {} SET run_after = now()").format(table))
-    assert calls == [1, 2, 3]
-    [job] = jobs.list()
-    assert job["status"] == "failed" and "database went away" in job["last_error"]["message"]
-    assert crm.workflows.get_run(run["run_id"])["status"] == "failed"
+    monkeypatch.setattr(WorkflowService, "execute_job", boom)
+    worker.run_until_idle()
+    conn.execute(sql.SQL("UPDATE {} SET scheduled_at = now()").format(jobs_table(crm)))
+    worker.run_until_idle()
+    assert len(calls) == 2
+    [job] = list_jobs(DATABASE_URL, crm)
+    assert job["status"] == "failed" and job["attempts"] == 2
+    failed = crm.workflows.get_run(run["run_id"])
+    assert failed["status"] == "failed" and "database went away" in failed["error"]["message"]
 
 
-def test_a_lost_worker_lease_is_reclaimed(crm, worker):
+def test_handing_over_twice_does_not_run_twice(crm, worker):
+    """A crash after handing a run to the queue but before recording it."""
     from test_workflows import QUALIFY
 
     crm.workflows.save(QUALIFY)
     lead = crm.records.create("lead", {"family_name": "Doe"})
     run = crm.workflows.start("qualify-lead", {"lead_id": lead["id"]}, background=True)
-    jobs = JobService(crm.as_principal(Principal.system("worker")))
-    assert jobs.claim("crashed-worker") is not None  # claimed, then the worker "dies"
-    assert jobs.claim("other") is None  # still leased
+    rt = worker.worker
+
+    async def hand_over_without_marking():
+        _, counts = await rt._prepare(crm.tenant)
+        return counts
+
+    asyncio.run(hand_over_without_marking())
     crm.conn.execute(
-        sql.SQL("UPDATE {} SET locked_until = now() - interval '1 second'").format(
-            sql.Identifier(crm.tenant.schema, "jobs")
+        sql.SQL("UPDATE {} SET deferred_at = NULL").format(
+            sql.Identifier(crm.tenant.schema, "workflow_runs")
         )
     )
+    worker.run_until_idle()
+    assert len(list_jobs(DATABASE_URL, crm)) == 1
+    assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
+
+
+def test_jobs_of_a_crashed_worker_are_retried(crm, conn, worker):
+    from test_workflows import QUALIFY
+
+    from osier.jobs import JobSettings, TenantQueue
+
+    crm.workflows.save(QUALIFY)
+    lead = crm.records.create("lead", {"family_name": "Doe"})
+    run = crm.workflows.start("qualify-lead", {"lead_id": lead["id"]}, background=True)
+    asyncio.run(worker.worker._prepare(crm.tenant))  # handed over, not run
+    schema = jobs_schema(crm.tenant)
+    worker_id = conn.execute(
+        sql.SQL(
+            "INSERT INTO {} (last_heartbeat) VALUES (now() - interval '1 hour') RETURNING id"
+        ).format(sql.Identifier(schema, "procrastinate_workers"))
+    ).fetchone()[0]
+    conn.execute(  # the job was running on that worker when it died
+        sql.SQL("UPDATE {} SET status = 'doing', worker_id = %s").format(jobs_table(crm)),
+        (worker_id,),
+    )
+    queue = TenantQueue(DATABASE_URL, crm.tenant, JobSettings(), lambda: None)
+
+    async def recover():
+        async with queue.app.open_async():
+            return await queue.recover_stalled()
+
+    assert asyncio.run(recover()) == 1
     worker.run_until_idle()
     assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
 
@@ -297,16 +347,103 @@ def test_cancelled_queued_run_does_not_execute(crm, worker):
     assert crm.workflows.get_run(run["run_id"])["status"] == "cancelled"
 
 
-def test_jobs_list_needs_workflows_manage(crm, make_user):
+def test_job_settings_need_jobs_manage_and_a_person(crm, make_user, boot):
     member = crm.as_principal(make_user("rep@example.com", "member"))
     with pytest.raises(OsierError) as err:
-        JobService(member).list()
+        JobSettingsService(member).update({"concurrency": 3})
     assert err.value.code == "MISSING_PERMISSION"
+    with pytest.raises(OsierError) as err:
+        list_jobs(DATABASE_URL, member)
+    assert err.value.code == "MISSING_PERMISSION"
+    agent = crm.as_principal(agent_for(boot.admin_user_id))
+    with pytest.raises(OsierError) as err:
+        JobSettingsService(agent).update({"concurrency": 3})
+    assert err.value.code == "APPROVAL_REQUIRES_HUMAN"
 
 
-def test_unknown_job_kind_is_refused(crm):
-    with pytest.raises(OsierError):
-        JobService(crm).enqueue("shell.run", {}, principal=crm.principal)
+@pytest.mark.parametrize(
+    "change", [{"concurrency": 50}, {"max_attempts": 0}, {"nope": 1}, {"retry_backoff": "random"}]
+)
+def test_job_settings_stay_within_platform_limits(crm, change):
+    with pytest.raises(OsierError) as err:
+        JobSettingsService(crm).update(change)
+    assert err.value.code == "JOB_SETTINGS_INVALID"
+
+
+def test_job_settings_are_per_tenant(crm, conn):
+    from osier import bootstrap_tenant, drop_tenant
+
+    other = bootstrap_tenant(
+        conn, organization_name="Other", admin_email="o@o.test", admin_display_name="O"
+    )
+    try:
+        JobSettingsService(crm).update({"concurrency": 5})
+        from osier import Principal, Session
+
+        theirs = Session(conn, other.tenant, Principal(user_id=other.admin_user_id))
+        assert JobSettingsService(theirs).get().concurrency == 2
+    finally:
+        drop_tenant(conn, other.tenant)
+
+
+def test_paused_tenant_queues_but_does_not_run(crm, worker):
+    from test_workflows import QUALIFY
+
+    crm.workflows.save(QUALIFY)
+    JobSettingsService(crm).update({"paused": True})
+    lead = crm.records.create("lead", {"family_name": "Doe"})
+    run = crm.workflows.start("qualify-lead", {"lead_id": lead["id"]}, background=True)
+    worker.run_until_idle()
+    assert crm.workflows.get_run(run["run_id"])["status"] == "queued"
+    assert [j["status"] for j in list_jobs(DATABASE_URL, crm)] == ["todo"]
+    JobSettingsService(crm).update({"paused": False})
+    worker.run_until_idle()
+    assert crm.workflows.get_run(run["run_id"])["status"] == "waiting"
+
+
+def test_tenant_queues_are_isolated(crm, conn, worker):
+    """Each tenant's jobs live in its own schema; one tenant's worker never sees
+    another tenant's jobs."""
+    from test_workflows import QUALIFY
+
+    from osier import bootstrap_tenant, drop_tenant
+
+    other = bootstrap_tenant(
+        conn, organization_name="Other", admin_email="o@o.test", admin_display_name="O"
+    )
+    try:
+        crm.workflows.save(QUALIFY)
+        lead = crm.records.create("lead", {"family_name": "Doe"})
+        crm.workflows.start("qualify-lead", {"lead_id": lead["id"]}, background=True)
+        worker.run_until_idle()
+        counts = {}
+        for t in (crm.tenant, other.tenant):
+            counts[t.schema] = conn.execute(
+                sql.SQL("SELECT count(*) FROM {}").format(
+                    sql.Identifier(jobs_schema(t), "procrastinate_jobs")
+                )
+            ).fetchone()[0]
+        assert counts == {crm.tenant.schema: 1, other.tenant.schema: 0}
+        leaked = conn.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name LIKE 'procrastinate%'"
+        ).fetchone()[0]
+        assert leaked == 0
+    finally:
+        drop_tenant(conn, other.tenant)
+    gone = conn.execute(
+        "SELECT count(*) FROM information_schema.schemata WHERE schema_name = %s",
+        (jobs_schema(other.tenant),),
+    ).fetchone()[0]
+    assert gone == 0
+
+
+def test_queue_connection_cannot_reach_tenant_data(crm):
+    with psycopg.connect(
+        DATABASE_URL, autocommit=True, options=f"-c search_path={jobs_schema(crm.tenant)}"
+    ) as c:
+        with pytest.raises(psycopg.errors.UndefinedTable):
+            c.execute("SELECT * FROM lead")
 
 
 def test_workflow_error_import_is_public():

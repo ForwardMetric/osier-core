@@ -29,6 +29,7 @@ PERMISSIONS: dict[str, str] = {
     "skills.manage": "create, import, change, and share skills",
     "tools.manage": "configure which tools agents may use",
     "workflows.manage": "create and change workflows",
+    "jobs.manage": "view background jobs and change the organization's job settings",
 }
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -42,6 +43,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "skills.manage",
         "tools.manage",
         "workflows.manage",
+        "jobs.manage",
     ),
     "member": ("records.use", "actions.request"),
 }

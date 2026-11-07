@@ -375,8 +375,6 @@ class WorkflowService:
         error: dict[str, Any] | None = None,
     ) -> uuid.UUID:
         """Insert a run (and, when queued, its job). Used by start and by triggers."""
-        from ..jobs import JobService
-
         run_id = uuid.uuid4()
         status = "failed" if error else ("queued" if queued else "running")
         self._conn.execute(
@@ -413,19 +411,12 @@ class WorkflowService:
                 **({"error": error} if error else {}),
             },
         )
-        if queued and not error:
-            JobService(self._session).enqueue(
-                "workflow.execute",
-                {"run_id": str(run_id)},
-                principal=principal,
-                source="workflow",
-                idempotency_key=f"workflow-run:{run_id}",
-            )
+        # A queued run is handed to the tenant's job queue by the worker (osier.jobs).
         return run_id
 
-    def execute_job(self, run_id: Any, decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute_job(self, run_id: Any) -> dict[str, Any]:
         """Run or resume a run in a worker. Safe to repeat after a crash: it continues
-        from the last checkpoint."""
+        from the last checkpoint, with a decision made in the background if any."""
         run = self._run_row(run_id)
         if run["status"] in FINISHED or run["status"] == "waiting":
             return self._run_out(run)
@@ -436,7 +427,19 @@ class WorkflowService:
             ).format(self._t("workflow_runs")),
             (run["id"],),
         )
-        return self._execute(run["id"], None, definition_of=run, decision=decision)
+        result = self._execute(run["id"], None, definition_of=run, decision=run["resume_with"])
+        if run["resume_with"] is not None:
+            self._conn.execute(
+                sql.SQL("UPDATE {} SET resume_with = NULL WHERE id = %s").format(
+                    self._t("workflow_runs")
+                ),
+                (run["id"],),
+            )
+        return result
+
+    def run_principal(self, run_id: Any) -> Principal:
+        """Who a run acts as (for the worker)."""
+        return self._run_as(self._run_row(run_id))
 
     def mark_failed(self, run_id: Any, error: dict[str, Any]) -> None:
         run = self._run_row(run_id)
@@ -577,32 +580,28 @@ class WorkflowService:
                 )
         else:
             self._authz.require("workflows.manage", "deciding workflow approvals")
-        claimed = self._conn.execute(
-            sql.SQL(
-                "UPDATE {} SET status = %s, waiting = NULL, updated_at = now() "
-                "WHERE id = %s AND status = 'waiting' RETURNING id"
-            ).format(self._t("workflow_runs")),
-            ("queued" if background else "running", run["id"]),
-        ).fetchone()
-        if claimed is None:
-            raise ApprovalError("Someone else just decided this.", code="WORKFLOW_RUN_NOT_WAITING")
         decision = {
             "approved": approve,
             "decided_by": str(self._principal.user_id),
             "comment": comment,
         }
+        claimed = self._conn.execute(
+            sql.SQL(
+                "UPDATE {} SET status = %s, waiting = NULL, resume_with = %s, "
+                "deferred_at = NULL, updated_at = now() "
+                "WHERE id = %s AND status = 'waiting' RETURNING id"
+            ).format(self._t("workflow_runs")),
+            (
+                "queued" if background else "running",
+                Jsonb(decision) if background else None,
+                run["id"],
+            ),
+        ).fetchone()
+        if claimed is None:
+            raise ApprovalError("Someone else just decided this.", code="WORKFLOW_RUN_NOT_WAITING")
         self._event(run["id"], waiting.get("step"), "approved" if approve else "rejected", decision)
         run_as = self._run_as(run)
         if background:
-            from ..jobs import JobService
-
-            JobService(self._session).enqueue(
-                "workflow.execute",
-                {"run_id": str(run["id"]), "decision": decision},
-                principal=run_as,
-                source="workflow",
-                idempotency_key=f"workflow-decision:{run['id']}:{waiting.get('step')}",
-            )
             return self.get_run(run["id"])
         runner = self._session.as_principal(run_as)
         return WorkflowService(runner)._execute(

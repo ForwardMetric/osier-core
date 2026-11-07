@@ -863,17 +863,44 @@ backfills).
 
 ### 12.7 Job queue, worker, and triggers (built)
 
-- **Queue:** a `jobs` table **in each tenant schema** (not yet the central
-  control-plane queue of §12.1; that comes with M5). A job is a platform handler
-  (`jobs.HANDLERS`, currently only `workflow.execute`) plus a JSON payload and the
-  principal it runs as. Tenants never supply job code.
-- **Worker:** `osier worker` claims jobs with `FOR UPDATE SKIP LOCKED` and a
-  5-minute lease; a job whose worker vanished is claimed again after the lease.
-  Unexpected errors retry with backoff (10 s, 60 s, 300 s) up to 3 attempts, then
-  the job and its run are marked failed; `OsierError`s are final. At most 5 jobs
-  run at once per tenant (a simple cap, checked when claiming). Several workers can
-  run side by side. Workflow jobs resume from the last checkpoint, so a retried run
-  does not repeat completed steps.
+- **Per-tenant queues (decided).** Each tenant's jobs live in its own schema,
+  `j_<hex>`, next to its data schema `t_<hex>`; one tenant's jobs never share a
+  table with another's. This replaces the central queue planned in §12.1: tenant
+  isolation outweighs simpler cross-tenant scheduling. Dropping a tenant drops its
+  queue.
+- **Engine: Procrastinate** (MIT, Postgres-only, psycopg 3; pinned `<3.11`) instead of
+  our own queue. It provides workers, retries, locks, LISTEN/NOTIFY, heartbeats.
+  Its SQL is unqualified, so its connection uses `search_path = j_<hex>` only, and
+  every Procrastinate function is pinned to that `search_path` at install. That
+  connection cannot see tenant data (tested). Engine code never touches queue
+  tables through `TenantConnection`; the guard refuses it (tested).
+- **Runs stay the source of truth.** Engine code marks a run `queued` in its own
+  transaction (including trigger dispatch). The worker hands queued runs to the
+  tenant's queue and records that (`deferred_at`). A crash in between means the run
+  is handed over again; `queueing_lock` and `lock` per run keep it from being queued
+  twice or executing twice at once (tested). Background approvals store the
+  decision on the run (`resume_with`).
+- **Per-tenant settings** (`meta_job_settings`, `jobs.manage`, changed by a person in
+  chat or `osier jobs settings`): `concurrency` 1–10, `max_attempts` 1–5,
+  `retry_wait_seconds` 1–3600 with `fixed` or `linear` backoff, `paused` (queue but
+  do not run), `keep_finished_days` 1–90. The bounds are platform limits protecting
+  shared workers; plans may raise them later. The worker applies changes within
+  about 10 seconds by restarting that tenant's queue runner.
+- **Worker** (`osier worker`): one process serves every tenant, with one
+  Procrastinate worker per tenant using that tenant's settings. Every tick it
+  dispatches triggers, hands over queued runs, recovers jobs of workers whose
+  heartbeat stopped (Procrastinate detects them but does not retry them itself), and
+  deletes finished jobs past retention. Errors in workflow steps fail the run
+  without retrying; unexpected errors retry per the tenant's settings, then fail
+  the run.
+- **Scaling limits (data gap):** each active tenant holds its own small connection
+  pool (up to concurrency + 2) in each worker process, so connections grow with
+  the number of tenants. Not measured; at hundreds of tenants this needs workers
+  that serve subsets of tenants, or starting a tenant's runner only when it has
+  work.
+- **Upgrading Procrastinate (to do):** a new version can need its SQL migrations
+  applied to every tenant's queue schema. Today we only install the schema once;
+  bumping the pin requires adding a per-tenant migration step.
 - **Record triggers** (`record_created`, `record_updated` with optional `fields`
   and `when` checks). Record updates now write `updated` record events with the
   changed fields. The worker claims undispatched events with `SKIP LOCKED` and, in
@@ -890,9 +917,9 @@ backfills).
   or enabled the workflow**; the confirmation prompt says so. Each due time fires
   once; missed times are skipped, not replayed. Disabling or retiring a workflow
   removes its schedules.
-- **Not built yet:** a central cross-tenant queue and fair scheduling, `LISTEN/NOTIFY`
-  instead of polling (the worker polls every 2 s when idle), job progress reporting,
-  time and cost budgets, and alerting on failed runs.
+- **Not built yet:** fair scheduling across tenants beyond per-tenant concurrency,
+  job progress reporting, time and cost budgets, and alerting on failed runs. The
+  dispatcher polls every 2 s; Procrastinate itself is woken by LISTEN/NOTIFY.
 
 ### 12.5 Skills (built: text only)
 
