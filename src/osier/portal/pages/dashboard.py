@@ -49,5 +49,6 @@ def register(portal: Any) -> None:
                         "link": "/apps",
                     }
                 )
-            waiting = _try(lambda: len(engine.schema.pending()))
-        return c.render("dashboard.html", steps=steps, waiting=waiting)
+        from .approvals import count
+
+        return c.render("dashboard.html", steps=steps, waiting=count(c))

@@ -267,3 +267,48 @@ def test_private_network_destinations_are_blocked():
         with pytest.raises(NetworkPolicyError):
             check_destination(host, 25, allow_private_network=False)
     check_destination("127.0.0.1", 25, allow_private_network=True)
+
+
+def test_revoking_a_connection_wipes_its_credentials_and_stops_use(
+    admin_connectors, agent_connectors, crm
+):
+    connect_smtp(admin_connectors, name="Sales SMTP")
+    assert [c["name"] for c in admin_connectors.list_connections()] == ["Sales SMTP"]
+    result = admin_connectors.revoke_connection("Sales SMTP")
+    assert result == {"name": "Sales SMTP", "status": "revoked"}
+    assert admin_connectors.list_connections() == []
+    with pytest.raises(OsierError):
+        agent_connectors.send_email(email_args())
+    row = crm.conn.execute(
+        sql.SQL("SELECT secret_ciphertext, revoked_at FROM {}").format(
+            sql.Identifier(crm.tenant.schema, "connector_credentials")
+        )
+    ).fetchone()
+    assert row[0] is None and row[1] is not None
+
+
+def test_only_people_with_connections_manage_can_revoke(
+    admin_connectors, agent_connectors, crm, make_user
+):
+    connect_smtp(admin_connectors, name="Sales SMTP")
+    with pytest.raises(ApprovalError):  # agents never
+        agent_connectors.revoke_connection("Sales SMTP")
+    member = ConnectorService(
+        crm.as_principal(make_user("rep@acme.test", "member")), CredentialBroker(KEY)
+    )
+    with pytest.raises(OsierError) as err:
+        member.revoke_connection("Sales SMTP")
+    assert err.value.code == "MISSING_PERMISSION"
+
+
+def test_decidable_calls_are_limited_to_the_requester_unless_a_manager(
+    admin_connectors, agent_connectors, crm, make_user
+):
+    connect_smtp(admin_connectors, name="Sales SMTP")
+    call = agent_connectors.send_email(email_args())
+    assert call["status"] == "awaiting_approval"
+    assert [c["call_id"] for c in admin_connectors.decidable_calls()] == [call["call_id"]]
+    stranger = ConnectorService(
+        crm.as_principal(make_user("rep@acme.test", "member")), CredentialBroker(KEY)
+    )
+    assert stranger.decidable_calls() == []

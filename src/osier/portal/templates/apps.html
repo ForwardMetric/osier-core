@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_forms.html" import visibility_fields %}
+{% block title %}Connected apps · osier{% endblock %}
+{% block content %}
+<h1>Connected apps</h1>
+<p class="muted">Apps that agents and workflows can use: email, and any MCP server. Credentials are stored encrypted and are never shown again.</p>
+
+<h2>Connected</h2>
+{% if connections %}
+<div class="card">
+<table>
+  <thead><tr><th>Name</th><th>Kind</th><th>Shared with</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for x in connections %}
+  <tr>
+    <td><a href="/apps/{{ x.name | urlencode }}"><strong>{{ x.name }}</strong></a>{% if x.is_default %} <span class="badge ok">Default</span>{% endif %}</td>
+    <td>{{ x.kind }}</td>
+    <td>{{ x.visibility }}{% if x.visible_roles %}: {{ x.visible_roles | join(', ') }}{% endif %}</td>
+    <td>{% if x.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge err">{{ x.status }}</span>{% endif %}
+      {% if x.server_status and x.server_status != 'active' %}<span class="badge todo">Tools need review</span>{% endif %}
+      {% if x.last_error %}<br><span class="muted small">{{ x.last_error }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card muted">Nothing connected yet.</div>
+{% endif %}
+
+<h2>Add an app</h2>
+
+<details class="card" open>
+<summary>MCP server</summary>
+<p class="muted small">Any MCP server reachable over https. osier fetches its tools and shows them to you first; nothing is connected until you confirm.</p>
+<form method="post" action="/apps/new/mcp" autocomplete="off">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row">
+    <div><label for="m-name">Name</label><input id="m-name" type="text" name="name" required placeholder="Notion"></div>
+    <div><label for="m-url">Server address</label><input id="m-url" type="url" name="url" required placeholder="https://mcp.example.com/mcp"></div>
+  </div>
+  <label for="m-desc">What is it for? <span class="hint">agents read this to decide when to use it</span></label>
+  <input id="m-desc" type="text" name="description" required placeholder="Company wiki and meeting notes.">
+  <div class="row">
+    <div><label for="m-hn">Token header <span class="hint">optional</span></label><input id="m-hn" type="text" name="header_name" placeholder="Authorization"></div>
+    <div><label for="m-hv">Token value <span class="hint">stored encrypted; never shown again</span></label><input id="m-hv" type="password" name="header_value" autocomplete="new-password" placeholder="Bearer ..."></div>
+  </div>
+  {{ visibility_fields(roles) }}
+  <button class="primary" type="submit">Fetch tools and review</button>
+</form>
+</details>
+
+<details class="card">
+<summary>Email (SMTP)</summary>
+<p class="muted small">Gmail or Microsoft 365 with an app password, or a relay such as SendGrid, Postmark or Mailgun. osier checks the login when you save.</p>
+<form method="post" action="/apps/new/email" autocomplete="off">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row">
+    <div><label for="e-name">Name</label><input id="e-name" type="text" name="name" required placeholder="Sales email"></div>
+    <div><label for="e-host">SMTP server</label><input id="e-host" type="text" name="host" required placeholder="smtp.example.com"></div>
+    <div><label for="e-port">Port</label><input id="e-port" type="number" name="port" value="587" min="1" max="65535"></div>
+    <div><label for="e-sec">Security</label><select id="e-sec" name="security"><option value="starttls">STARTTLS</option><option value="ssl">SSL</option><option value="none">None</option></select></div>
+    <div><label for="e-user">Username</label><input id="e-user" type="text" name="username" autocomplete="off"></div>
+    <div><label for="e-pass">Password <span class="hint">stored encrypted; never shown again</span></label><input id="e-pass" type="password" name="password" required autocomplete="new-password"></div>
+    <div><label for="e-from">From address</label><input id="e-from" type="email" name="from_address" required></div>
+    <div><label for="e-fromname">From name <span class="hint">optional</span></label><input id="e-fromname" type="text" name="from_name"></div>
+  </div>
+  <label for="e-appr">Before sending</label>
+  <select id="e-appr" name="approval"><option value="required">Ask a person to approve each email (recommended)</option><option value="not_required">Send without asking</option></select>
+  <div class="checks"><label><input type="checkbox" name="is_default" value="1"> Use as the default email connection</label></div>
+  {{ visibility_fields(roles) }}
+  <button class="primary" type="submit">Connect</button>
+</form>
+</details>
+
+<details class="card">
+<summary>Development outbox</summary>
+<p class="muted small">Writes emails to a local log instead of sending them. For trying things out.</p>
+<form method="post" action="/apps/new/outbox">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="o-name">Name</label><input id="o-name" type="text" name="name" required placeholder="Outbox">
+  <label for="o-appr">Before "sending"</label>
+  <select id="o-appr" name="approval"><option value="required">Ask a person to approve</option><option value="not_required">Go through without asking</option></select>
+  {{ visibility_fields(roles) }}
+  <button class="primary" type="submit">Add</button>
+</form>
+</details>
+{% endblock %}

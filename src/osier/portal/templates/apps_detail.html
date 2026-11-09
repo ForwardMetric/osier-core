@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_forms.html" import visibility_fields %}
+{% block title %}{{ connection.name }} · osier{% endblock %}
+{% block content %}
+<p class="small"><a href="/apps">Connected apps</a> /</p>
+<h1>{{ connection.name }}</h1>
+<div class="card">
+  <p>{{ connection.kind }} · {% if connection.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge err">{{ connection.status }}</span>{% endif %}
+  {% if connection.is_default %}<span class="badge ok">Default</span>{% endif %}</p>
+  <p class="muted small">Shared with: {{ connection.visibility }}{% if connection.visible_roles %} ({{ connection.visible_roles | join(', ') }}){% endif %}</p>
+  {% if connection.last_error %}<p class="small">Last error: {{ connection.last_error }}</p>{% endif %}
+</div>
+
+{% if server %}
+<h2>Tools</h2>
+{% if server.status != 'active' %}
+<div class="flash err">This server's tools changed or need review. Agents cannot use it until you review it.</div>
+{% endif %}
+<form method="post" action="/apps/{{ connection.name | urlencode }}/review" class="inline">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button type="submit">Check the server for changes</button>
+</form>
+<form method="post" action="/apps/{{ connection.name | urlencode }}/policy" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <table>
+    <thead><tr><th>Tool</th><th>What agents may do</th></tr></thead>
+    <tbody>
+    {% for t in server.tools %}
+    <tr>
+      <td><strong>{{ t.name }}</strong>{% if t.read_only %} <span class="badge ok">read-only</span>{% endif %}<br><span class="muted small">{{ t.description }}</span>
+        <input type="hidden" name="tool_{{ loop.index0 }}" value="{{ t.name }}"></td>
+      <td><select name="policy_{{ loop.index0 }}">
+        {% for p in policies %}<option value="{{ p }}" {{ 'selected' if p == t.policy }}>{{ {'auto': 'Use automatically', 'approval': 'Ask a person first', 'blocked': 'Never'}[p] }}</option>{% endfor %}
+      </select></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <button class="primary" type="submit">Save policies</button>
+</form>
+{% endif %}
+
+<h2>Sharing</h2>
+<form method="post" action="/apps/{{ connection.name | urlencode }}/visibility" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {{ visibility_fields(roles, connection.visibility) }}
+  <button class="primary" type="submit">Save sharing</button>
+</form>
+
+<h2>Remove</h2>
+<p><a href="/apps/{{ connection.name | urlencode }}/remove">Remove this connection</a> <span class="muted small">(stops it working and deletes its stored credentials)</span></p>
+{% endblock %}

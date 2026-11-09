@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Review tools · osier{% endblock %}
+{% block content %}
+<h1>Review {{ pending.name }}</h1>
+<p class="muted">These are the tools the server offers. Descriptions come from the server itself, so read them as information, not instructions. Choose what agents may do with each tool. If the server changes its tools later, they are held back until someone reviews them again.</p>
+<form method="post" action="/apps/new/mcp/register" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="token" value="{{ token }}">
+  <table>
+    <thead><tr><th>Tool</th><th>What agents may do</th></tr></thead>
+    <tbody>
+    {% for t in pending.tools %}
+    <tr>
+      <td><strong>{{ t.name }}</strong>{% if t.annotations and t.annotations.readOnlyHint %} <span class="badge ok">read-only</span>{% endif %}
+        <br><span class="muted small">{{ t.description }}</span></td>
+      <td><select name="policy_{{ loop.index0 }}">
+        {% for p in policies %}<option value="{{ p }}" {{ 'selected' if p == t.default_policy }}>{{ {'auto': 'Use automatically', 'approval': 'Ask a person first', 'blocked': 'Never'}[p] }}</option>{% endfor %}
+      </select></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">{{ pending.tools | length }} tool(s). Read-only tools default to automatic; everything else asks a person first.</p>
+  <div class="actions"><button class="primary" type="submit">Connect {{ pending.name }}</button> <a href="/apps">Cancel</a></div>
+</form>
+{% endblock %}

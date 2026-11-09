@@ -4,7 +4,7 @@ import pytest
 from conftest import agent_for
 
 from osier.connectors import ConnectorService, CredentialBroker
-from osier.errors import NotFoundError, RecordValidationError
+from osier.errors import NotFoundError, OsierError, RecordValidationError
 
 KEY = CredentialBroker.generate_key()
 
@@ -91,3 +91,28 @@ def test_invalid_visibility(crm, setup, visibility, roles):
         svc(crm, setup["dev"]).create_connection(
             "dev_outbox", "X", visibility=visibility, visible_roles=roles
         )
+
+
+def test_managers_can_list_connections_that_are_not_shared_with_them(crm, make_user):
+    key = CredentialBroker.generate_key()
+    admin = ConnectorService(crm, CredentialBroker(key))
+    admin.create_connection(
+        "dev_outbox",
+        "Outbox",
+        approval="not_required",
+        visibility="roles",
+        visible_roles=["member"],
+    )
+    # A second manager who did not create it and is not in the "member" role:
+    developer = ConnectorService(
+        crm.as_principal(make_user("dev@acme.test", "developer")), CredentialBroker(key)
+    )
+    assert developer.list_connections() == []  # as a user of it, they cannot see it
+    assert [c["name"] for c in developer.list_connections(manage=True)] == ["Outbox"]
+    member = ConnectorService(
+        crm.as_principal(make_user("rep@acme.test", "member")), CredentialBroker(key)
+    )
+    assert [c["name"] for c in member.list_connections()] == ["Outbox"]
+    with pytest.raises(OsierError) as err:  # listing everything is a manager's tool
+        member.list_connections(manage=True)
+    assert err.value.code == "MISSING_PERMISSION"

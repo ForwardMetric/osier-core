@@ -198,6 +198,27 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
             self._store_visibility(connection["id"], visible_roles if visibility == "roles" else [])
         return self._describe_connection(updated)
 
+    def revoke_connection(self, connection_name: str) -> dict[str, Any]:
+        """Disconnect an app: the connection stops working and its stored credentials are
+        wiped. People with connections.manage only. Past calls stay in the audit log."""
+        self._require_human("Removing a connection")
+        connection = self._connection_by_name(connection_name, manage=True)
+        with self._conn.transaction():
+            self._records.update(
+                "connection",
+                connection["id"],
+                {"status": "revoked"},
+                expected_row_version=connection["row_version"],
+            )
+            self._conn.execute(
+                sql.SQL(
+                    "UPDATE {} SET secret_ciphertext = NULL, key_id = NULL, "
+                    "revoked_at = now() WHERE connection_id = %s"
+                ).format(self._t("connector_credentials")),
+                (connection["id"],),
+            )
+        return {"name": connection["name"], "status": "revoked"}
+
     @staticmethod
     def _sharing_warning(scope: str, visibility: str) -> str | None:
         if scope == "user" and visibility != "private":
@@ -352,14 +373,23 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
         }
 
     def list_connections(
-        self, *, capability: str | None = None, purpose: str | None = None
+        self,
+        *,
+        capability: str | None = None,
+        purpose: str | None = None,
+        manage: bool = False,
     ) -> list[dict[str, Any]]:
+        """Connections the person behind this session may use. With ``manage`` (people
+        with connections.manage only), all of them: a manager who restricts an app to a
+        role they are not in must still be able to see and change it."""
+        if manage:
+            self._require_human("Managing connections")
         where: dict[str, Any] = {}
         if purpose:
             where["purpose"] = purpose
         result = []
         for record in self._session.records.list("connection", where=where, limit=200):
-            if not self._visible(record) or record["status"] == "revoked":
+            if (not manage and not self._visible(record)) or record["status"] == "revoked":
                 continue
             described = self._describe_connection(record)
             if capability and capability not in described["capabilities"]:
@@ -572,6 +602,27 @@ class ConnectorService(OAuthConnectMixin, McpConnectorsMixin):
                 ).format(self._t("connector_calls"))
             ).fetchall()
         return [self._call_view(r, include_arguments=True) for r in rows]
+
+    def decidable_calls(self) -> list[dict[str, Any]]:
+        """Pending actions the person behind this session may approve or reject: the ones
+        their own agents requested, or all of them for people who manage connections."""
+        me = self._principal.user_id
+        manager = self._authz.has("connections.manage")
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            rows = cur.execute(
+                sql.SQL(
+                    "SELECT * FROM {} WHERE status = 'awaiting_approval' ORDER BY created_at"
+                ).format(self._t("connector_calls"))
+            ).fetchall()
+
+        def requester(row: dict[str, Any]) -> Any:
+            return row["on_behalf_of"] if row["actor_type"] == "agent" else row["actor_id"]
+
+        return [
+            self._call_view(r, include_arguments=True)
+            for r in rows
+            if manager or requester(r) == me
+        ]
 
     def get_call(self, call_id: Any) -> dict[str, Any]:
         return self._call_view(self._get_call(call_id))

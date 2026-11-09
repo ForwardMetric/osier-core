@@ -6,8 +6,10 @@ from typing import Any
 
 
 def register_all(portal: Any) -> None:
-    from . import ai, auth, dashboard
+    from . import ai, approvals, apps, auth, dashboard
 
     auth.register(portal)
     dashboard.register(portal)
     ai.register(portal)
+    apps.register(portal)
+    approvals.register(portal)

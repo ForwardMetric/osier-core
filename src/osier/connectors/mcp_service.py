@@ -299,6 +299,28 @@ class McpConnectorsMixin:
         )
         return self.list_tools(connection_name)
 
+    def describe_mcp_server(self, connection_name: str) -> dict[str, Any]:
+        """Everything a manager needs to review a server: its status and *all* pinned
+        tools with their policies, blocked ones included (list_tools hides those)."""
+        self._require_human("Managing an MCP server")
+        connection, ctype = self._mcp_connection(connection_name, manage=True)
+        policies = self._tool_policies(connection["id"])
+        return {
+            "connection": connection["name"],
+            "server": ctype["label"],
+            "status": ctype["status"],
+            "tools_hash": ctype["tools_hash"],
+            "tools": [
+                {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "read_only": t.get("annotations", {}).get("readOnlyHint") is True,
+                    "policy": policies.get(t["name"], default_tool_policy(t)),
+                }
+                for t in ctype["tools"]
+            ],
+        }
+
     def review_mcp_tools(self, connection_name: str) -> dict[str, Any]:
         """Compare the server's current tools with the pinned ones."""
         self._require_human("Reviewing an MCP server")

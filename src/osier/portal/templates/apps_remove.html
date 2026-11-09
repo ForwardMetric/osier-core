@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Remove connection · osier{% endblock %}
+{% block content %}
+<h1>Remove {{ name }}?</h1>
+<form method="post" action="/apps/{{ name | urlencode }}/remove" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <p>The connection stops working and its stored credentials are deleted. Past activity stays in the audit log. Workflow steps that use it will fail until it is connected again.</p>
+  <div class="actions"><button class="danger" type="submit">Remove</button> <a href="/apps/{{ name | urlencode }}">Cancel</a></div>
+</form>
+{% endblock %}

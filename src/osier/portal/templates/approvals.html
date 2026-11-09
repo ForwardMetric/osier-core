@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Approvals · osier{% endblock %}
+{% block content %}
+<h1>Approvals</h1>
+<p class="muted">Things that are waiting for a person to decide. Agents can propose, but only people approve.</p>
+{% if not (schema or actions or workflows) %}
+<div class="card muted">Nothing is waiting for you.</div>
+{% endif %}
+
+{% if workflows %}
+<h2>Workflow approvals</h2>
+{% for r in workflows %}
+<div class="card">
+  <p><strong>{{ r.workflow }}</strong> <span class="muted small">version {{ r.version }}</span></p>
+  <p>{{ r.waiting_for.message }}</p>
+  <form method="post" action="/approvals/workflow/{{ r.run_id }}/approve">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="c-{{ r.run_id }}">Comment <span class="hint">optional</span></label>
+    <input id="c-{{ r.run_id }}" type="text" name="comment">
+    <div class="actions">
+      <button class="primary" type="submit">Approve</button>
+      <button class="danger" type="submit" formaction="/approvals/workflow/{{ r.run_id }}/reject">Reject</button>
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if actions %}
+<h2>Actions agents want to take</h2>
+{% for a in actions %}
+<div class="card">
+  <p><strong>{{ a.summary }}</strong></p>
+  <p class="muted small">Requested by {{ a.requested_by_type }}. Nothing has been sent or run yet.</p>
+  <details open><summary>What it would do</summary><pre class="small">{{ a.details }}</pre></details>
+  <form method="post" action="/approvals/action/{{ a.call_id }}/approve" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary" type="submit">Approve and run</button></form>
+  <form method="post" action="/approvals/action/{{ a.call_id }}/reject" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">Reject</button></form>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if schema %}
+<h2>Changes to objects and fields</h2>
+{% for s in schema %}
+<div class="card">
+  <p class="muted small">{{ 'Package' if s.source == 'package' else 'Schema' }} change proposed by {{ s.proposed_by_type }}</p>
+  <ul>{% for line in s.summary %}<li>{{ line }}</li>{% endfor %}</ul>
+  {% if s.blockers %}
+  <div class="flash err">{% for b in s.blockers %}<div>{{ b.message }}</div>{% endfor %}</div>
+  {% endif %}
+  <details><summary>Technical details (SQL)</summary><pre class="small">{% for d in s.ddl %}{{ d }}
+{% endfor %}</pre></details>
+  {% if s.can_apply %}
+  <form method="post" action="/approvals/schema/{{ s.change_set_id }}/approve" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="diff_hash" value="{{ s.diff_hash }}">
+    <button class="primary" type="submit">Approve and apply</button></form>
+  {% endif %}
+  <form method="post" action="/approvals/schema/{{ s.change_set_id }}/reject" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">Reject</button></form>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

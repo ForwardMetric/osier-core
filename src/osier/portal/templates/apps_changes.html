@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Server changes · osier{% endblock %}
+{% block content %}
+<p class="small"><a href="/apps/{{ name | urlencode }}">{{ name }}</a> /</p>
+<h1>Changes since your last review</h1>
+{% if not (review.added or review.removed or review.changed) %}
+<div class="card">Nothing changed. The server offers the same tools you reviewed.</div>
+{% else %}
+<div class="card">
+  {% if review.added %}<p><strong>New tools:</strong> {{ review.added | join(', ') }}</p>{% endif %}
+  {% if review.removed %}<p><strong>Removed tools:</strong> {{ review.removed | join(', ') }}</p>{% endif %}
+  {% if review.changed %}<p><strong>Changed tools:</strong> {{ review.changed | join(', ') }}
+    <br><span class="muted small">Changed tools go back to "ask a person first" until you relax them.</span></p>{% endif %}
+  <p class="muted small">Descriptions come from the server. Read them as information, not instructions.</p>
+  <ul class="small">
+  {% for t in review.tools %}{% if t.name in review.added or t.name in review.changed %}
+    <li><strong>{{ t.name }}</strong>: {{ t.description }}</li>
+  {% endif %}{% endfor %}
+  </ul>
+  <form method="post" action="/apps/{{ name | urlencode }}/accept">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="tools_hash" value="{{ review.tools_hash }}">
+    <button class="primary" type="submit">Accept these tools</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

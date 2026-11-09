@@ -1,0 +1,13 @@
+{% macro visibility_fields(roles, current="organization") %}
+<label>Who can use it</label>
+<select name="visibility">
+  <option value="organization" {{ 'selected' if current == 'organization' }}>Everyone in the organization</option>
+  <option value="roles" {{ 'selected' if current == 'roles' }}>Only the roles ticked below</option>
+  <option value="private" {{ 'selected' if current == 'private' }}>Only me</option>
+</select>
+{% if roles %}
+<div class="checks"><span class="hint">Roles (when "only the roles ticked" is chosen):</span><br>
+  {% for r in roles %}<label><input type="checkbox" name="visible_roles" value="{{ r }}"> {{ r }}</label>{% endfor %}
+</div>
+{% endif %}
+{% endmacro %}
