@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Home · osier{% endblock %}
+{% block content %}
+<h1>Welcome, {{ who.name }}</h1>
+{% if steps %}
+<h2>Set up</h2>
+<div class="card">
+  <ul class="checklist">
+    {% for s in steps %}
+    <li>
+      <span class="badge {{ 'ok' if s.done else 'todo' }}">{{ 'Done' if s.done else 'To do' }}</span>
+      <a href="{{ s.link }}">{{ s.label }}</a>
+      <span class="muted small">{{ s.detail }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% else %}
+<p class="muted">Nothing for you to set up. Ask an administrator if you need access to something.</p>
+{% endif %}
+{% if waiting %}
+<h2>Waiting for you</h2>
+<div class="card"><a href="/approvals">{{ waiting }} item(s) need approval</a></div>
+{% endif %}
+{% endblock %}

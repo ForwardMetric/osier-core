@@ -1,0 +1,5 @@
+{% extends "public.html" %}
+{% block content %}
+<h1>{{ title }}</h1>
+<div class="card problem"><p>{{ message }}</p>{% if hint %}<p class="muted">{{ hint }}</p>{% endif %}</div>
+{% endblock %}

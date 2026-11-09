@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · osier{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<div class="card problem">
+  <p>{{ message }}</p>
+  {% if hint %}<p class="muted">{{ hint }}</p>{% endif %}
+  {% if expected %}
+  <p class="muted small">Expected one of:</p>
+  <ul class="small">{% for e in expected %}<li>{{ e }}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="muted small">Code: {{ code }}</p>
+</div>
+<p><a href="{{ back }}" class="muted">Go back</a></p>
+{% endblock %}

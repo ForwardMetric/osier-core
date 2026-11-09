@@ -623,6 +623,21 @@ def cmd_workflows_test(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_portal(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    from .portal import create_app
+
+    config = DevConfig.load()
+    app, portal = create_app(config, host=args.host, port=args.port)
+    print("osier portal (local development; sign-in uses a one-time link)")
+    print(f"\n  Open: {portal.login_url}\n")
+    print("Keep this link private: anyone with it can sign in as any person here.")
+    print("Press Ctrl+C to stop.")
+    # No access log: it would write the sign-in key and page URLs to the terminal history.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
+
+
 def cmd_worker(args: argparse.Namespace) -> None:
     import asyncio
     import logging
@@ -1087,6 +1102,13 @@ def build_parser() -> argparse.ArgumentParser:
     aisub.add_parser("status", help="connections, profiles, and usage").set_defaults(
         func=cmd_ai_status
     )
+
+    pt = sub.add_parser("portal", help="run the web portal (settings for AI, apps, people)")
+    pt.add_argument(
+        "--host", default="127.0.0.1", choices=["127.0.0.1", "localhost"], help="local only for now"
+    )
+    pt.add_argument("--port", type=int, default=8000)
+    pt.set_defaults(func=cmd_portal)
 
     w = sub.add_parser("worker", help="run background jobs and workflow triggers")
     w.add_argument("--once", action="store_true", help="run until idle, then exit")

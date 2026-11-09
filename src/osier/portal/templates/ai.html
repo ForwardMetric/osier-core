@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}AI models · osier{% endblock %}
+{% block content %}
+<h1>AI models</h1>
+<p class="muted">Connect the AI models that workflow steps can use. Keys are stored encrypted and are never shown again.</p>
+
+<h2>Connections</h2>
+{% if ai.connections %}
+<div class="card">
+<table>
+  <thead><tr><th>Name</th><th>Provider</th><th>Models</th><th>This month</th><th></th></tr></thead>
+  <tbody>
+  {% for x in ai.connections %}
+  <tr>
+    <td><strong>{{ x.name }}</strong><br>
+      {% if x.api_key_configured %}<span class="badge ok">Key saved</span>{% else %}<span class="badge todo">No key</span>{% endif %}</td>
+    <td>{{ x.provider }}{% if x.api_base %}<br><span class="muted small">{{ x.api_base }}</span>{% endif %}</td>
+    <td class="small">{{ x.models | join(', ') }}</td>
+    <td class="small">{{ x.tokens_this_month }} / {{ x.monthly_token_limit }} tokens
+      {% if x.cost_usd_this_month is not none %}<br>${{ '%.4f' | format(x.cost_usd_this_month) }}{% if x.monthly_budget_usd %} of ${{ x.monthly_budget_usd }}{% endif %}{% endif %}</td>
+    <td><a href="/ai/connections/{{ x.name | urlencode }}/disconnect">Remove</a></td>
+  </tr>
+  <tr><td colspan="5">
+    <details><summary>Change models and limits</summary>
+    <form method="post" action="/ai/connections/{{ x.name | urlencode }}/update">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Models <span class="hint">one per line; leave empty to keep</span></label>
+      <textarea name="models" rows="3"></textarea>
+      <div class="row">
+        <div><label>Monthly token limit</label><input type="number" name="monthly_token_limit" min="10000" placeholder="{{ x.monthly_token_limit }}"></div>
+        <div><label>Monthly budget (USD)</label><input type="number" step="0.01" name="monthly_budget_usd" min="0"></div>
+        <div><label>Input price (USD per million tokens)</label><input type="number" step="0.0001" name="input_usd_per_million" min="0"></div>
+        <div><label>Output price (USD per million tokens)</label><input type="number" step="0.0001" name="output_usd_per_million" min="0"></div>
+      </div>
+      <button type="submit">Save changes</button>
+    </form>
+    </details>
+  </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card muted">No AI connections yet. Add one below.</div>
+{% endif %}
+
+<h2>Add a connection</h2>
+<form method="post" action="/ai/connections" class="card" autocomplete="off">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row">
+    <div><label for="c-name">Name <span class="hint">lowercase letters, digits, hyphens</span></label>
+      <input id="c-name" type="text" name="name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="main"></div>
+    <div><label for="c-provider">Provider</label>
+      <select id="c-provider" name="provider">
+        {% for p in providers %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+      <span class="hint">openrouter: many models behind one key. openai: OpenAI. compatible: any OpenAI-compatible server (needs the address below).</span></div>
+  </div>
+  <label for="c-key">API key <span class="hint">stored encrypted; never shown again</span></label>
+  <input id="c-key" type="password" name="api_key" autocomplete="new-password">
+  <label for="c-models">Models <span class="hint">one per line, exactly as the provider names them</span></label>
+  <textarea id="c-models" name="models" rows="3" required></textarea>
+  <label for="c-base">API address <span class="hint">only for "compatible" (https://...)</span></label>
+  <input id="c-base" type="url" name="api_base" placeholder="https://llm.example.com/v1">
+  <details><summary>Limits and prices (optional)</summary>
+    <div class="row">
+      <div><label>Monthly token limit</label><input type="number" name="monthly_token_limit" min="10000"></div>
+      <div><label>Monthly budget (USD)</label><input type="number" step="0.01" name="monthly_budget_usd" min="0"></div>
+      <div><label>Input price (USD per million tokens)</label><input type="number" step="0.0001" name="input_usd_per_million" min="0"></div>
+      <div><label>Output price (USD per million tokens)</label><input type="number" step="0.0001" name="output_usd_per_million" min="0"></div>
+    </div>
+    <p class="hint">A dollar budget needs prices, unless the provider is openrouter (it reports costs).</p>
+  </details>
+  <button class="primary" type="submit">Connect</button>
+</form>
+
+<h2>Model profiles</h2>
+<p class="muted">Workflow AI steps pick a profile, so you can change the model behind a name without editing workflows.</p>
+{% if ai.profiles %}
+<div class="card">
+<table>
+  <thead><tr><th>Profile</th><th>Connection / model</th><th>Effort</th><th></th></tr></thead>
+  <tbody>
+  {% for p in ai.profiles %}
+  <tr>
+    <td><strong>{{ p.name }}</strong> {% if p.default %}<span class="badge ok">Default</span>{% endif %}
+      {% if p.description %}<br><span class="muted small">{{ p.description }}</span>{% endif %}</td>
+    <td>{{ p.connection }} / {{ p.model }}</td>
+    <td>{{ p.effort or '-' }}</td>
+    <td><form method="post" action="/ai/profiles/{{ p.name | urlencode }}/remove" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" type="submit">Remove</button></form></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% if ai.connections %}
+<form method="post" action="/ai/profiles" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row">
+    <div><label for="p-name">Profile name</label><input id="p-name" type="text" name="name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="careful"></div>
+    <div><label for="p-conn">Connection</label>
+      <select id="p-conn" name="connection">{% for x in ai.connections %}<option>{{ x.name }}</option>{% endfor %}</select></div>
+    <div><label for="p-model">Model</label>
+      <input id="p-model" type="text" name="model" list="known-models" required>
+      <datalist id="known-models">{% for k in known %}<option value="{{ k }}">{% endfor %}</datalist></div>
+    <div><label for="p-effort">Reasoning effort <span class="hint">only for models that support it</span></label>
+      <select id="p-effort" name="effort"><option value="">not sent</option><option>low</option><option>medium</option><option>high</option></select></div>
+  </div>
+  <label for="p-desc">Description <span class="hint">optional</span></label>
+  <input id="p-desc" type="text" name="description">
+  <div class="checks"><label><input type="checkbox" name="default" value="1"> Use as the default profile</label></div>
+  <button class="primary" type="submit">Save profile</button>
+</form>
+{% endif %}
+{% endblock %}

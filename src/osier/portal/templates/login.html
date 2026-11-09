@@ -1,0 +1,16 @@
+{% extends "public.html" %}
+{% block content %}
+<h1>Sign in</h1>
+<p class="muted">This is the local development portal. Choose who to sign in as.</p>
+{% if problem %}<div class="flash err" role="alert">{{ problem }}</div>{% endif %}
+<form method="post" action="/login" class="card">
+  <input type="hidden" name="key" value="{{ key }}">
+  <label for="user">Person</label>
+  <select id="user" name="user" required>
+    {% for p in people %}
+    <option value="{{ p.id }}">{{ p.display_name }} ({{ p.email }})</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="primary">Sign in</button>
+</form>
+{% endblock %}
