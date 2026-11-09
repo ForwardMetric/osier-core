@@ -1265,6 +1265,68 @@ counters (when rate limiting is built), automatic routing rules.
 
 ---
 
+### 13.10 The web portal (built, local)
+
+Administrators configure osier in a browser instead of the CLI: `osier portal` serves
+`http://127.0.0.1:8000`. Pages: **AI models** (connections, keys, profiles, limits,
+usage), **Connected apps** (MCP servers with tool review, SMTP, development outbox,
+sharing, removal), **Approvals** (schema changes, agent actions, workflow approvals),
+**Workflows** (definitions, runs, run or try with sample inputs), **Skills** (preview
+before saving, URL import), **People** (add people, roles, status). Once configured, the
+same tools are available to Claude through the MCP server.
+
+- **Stack (decided):** Starlette + Jinja2, server-rendered, **no JavaScript** (a CSP
+  forbids scripts and inline styles). All four libraries were already dependencies
+  through the MCP SDK (Starlette, Uvicorn, python-multipart) or are tiny (Jinja2).
+  Forms use plain POST/redirect. A React app was rejected for weight; HTMX is not needed
+  yet. If a page needs interactivity later, a vendored script file can be allowed.
+- **The portal is a thin layer.** Every page calls the same engine services as the CLI
+  and MCP server, **as the signed-in person** (source `portal`), so engine permission
+  checks apply to everything it does. Hiding nav entries is convenience only. Secrets
+  typed into forms (AI keys, SMTP passwords, MCP tokens) go straight to the credential
+  broker and are never rendered, redirected, or logged (rule 12, amended for the
+  portal). A multi-step flow (MCP review, skill preview) keeps what was typed in server
+  memory under a random token, never in the page.
+- **Sign-in (local only):** the terminal prints a one-time launch link containing a random
+  key; opening it offers a person picker. The key stops other web pages from signing
+  themselves in. **This is development sign-in, not authentication.** Hosting needs real
+  sign-in (planned: OpenID Connect with Google/Microsoft, so no passwords are stored)
+  and per-user MCP authorization (OAuth 2.1; the MCP SDK ships an authorization server
+  and token verifier we have not yet exercised).
+- **Browser-facing defences:** server-side sessions (random id cookie: HttpOnly,
+  SameSite=Lax, Secure when https; 2 h idle / 12 h absolute); a CSRF token on every POST
+  plus a same-origin check (`Origin: null` refused); a Host-header allowlist against DNS
+  rebinding; strict CSP, no framing, no caching of pages, `Referrer-Policy: same-origin`
+  (`no-referrer` made browsers send `Origin: null` on form posts and broke sign-in; found
+  only in a real browser). Output is autoescaped; untrusted text (MCP tool descriptions,
+  email bodies, skill text) is rendered as text.
+- **Approving what you saw:** schema approvals carry the hash of the proposal on screen,
+  so a proposal replaced meanwhile is refused instead of approved unseen.
+- **Guards the portal adds on top of the engine:** the last active administrator cannot
+  be demoted or suspended, and you cannot suspend yourself. These live in the portal, not
+  the engine, so the CLI can still do them (candidate to move into the engine).
+- **Engine additions it needed:** `revoke_connection`, `decidable_calls`,
+  `describe_mcp_server`, and `list_connections(manage=True)` (a manager who restricted
+  an app away from themselves could no longer see it).
+- **Known limitations / data gaps:**
+  - Sessions are in memory: they do not survive a restart or span several processes.
+    Hosting needs a shared session store.
+  - **Retired records still occupy unique values** (both the application check and the
+    database index count them), so a role removed from a person cannot be granted again,
+    and the same holds for any unique field or `unique_together`. Not a documented
+    decision; changing it means partial unique indexes and a migration of every tenant,
+    so it needs a decision. The People page says so and refuses cleanly.
+  - OAuth sign-in for MCP servers (Notion style) is not in the portal yet: providers that
+    reject `http://127.0.0.1` callbacks (Notion did) can only be tested once the portal
+    is served over https.
+  - No sign-up, invitations by email, password or SSO login, audit-log viewer, or
+    tenant switching: all part of hosting.
+  - The pages were checked in desktop Chromium only; a phone-width layout exists in the
+    CSS but was not tested.
+  - No dedicated security review has been done; do one before hosting.
+
+---
+
 ## 14. Technology stack
 
 | Concern | Choice |
@@ -1300,7 +1362,7 @@ the implementation is written from first principles.
 | **M3 — Permissions** | Roles; object, field, and owner-based record access; two-phase permission changes with confirmation tokens. |
 | **M4 — Views** | Declarative view specs; trusted renderer as MCP Apps (table and form first); validation and migration on schema change. |
 | **M5 — Multi-tenancy** | Control plane; tenant placement in shared or dedicated databases; per-tenant roles; schema relocation (shared → dedicated); routing; upgrade orchestration with pre-upgrade analysis; package catalog in the control-plane database with publish, diff-based upgrades, and automatic rollout of additive changes (§11.5). |
-| **M6 — Reporting & chat client** | Aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
+| **M6 — Reporting & chat client** | **Partly built:** local admin web portal (§13.10). **Remaining:** hosted sign-in, aggregation reports; benchmarks at 100k / 1M / 10M rows; own sign-in + chat page. Analytics store if benchmarks require it. |
 | **M7 — Skills, jobs & agent workflows** | **Built:** text skills per tenant (§12.5); workflows on LangGraph with record steps, conditions, and approvals (§12.4). job queue, worker, record and schedule triggers (§12.7). AI steps on the tenant's own model connections: OpenAI, OpenRouter, or compatible servers (§12.5a). **Next:** metadata-driven job types; MCP job tools; tenant tool catalogue (§12.6). |
 
 Tenant isolation is built in M5 but **designed for from M1**: the engine

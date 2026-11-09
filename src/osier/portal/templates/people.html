@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}People · osier{% endblock %}
+{% block content %}
+<h1>People</h1>
+<p class="muted">Who can sign in, and what roles they have. Roles decide what a person (and the agents acting for them) may do.</p>
+<p class="muted small">Careful: a role you remove from someone cannot be granted to them again yet (a known limitation). Add them as a new person if you need to.</p>
+
+<div class="card">
+<table>
+  <thead><tr><th>Person</th><th>Roles</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for u in users %}
+  <tr>
+    <td><strong>{{ u.name }}</strong>{% if u.id == me %} <span class="badge ok">You</span>{% endif %}<br><span class="muted small">{{ u.email }}</span></td>
+    <td>
+      <form method="post" action="/people/{{ u.id }}/roles">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div class="checks">
+          {% for r in roles %}<label><input type="checkbox" name="roles" value="{{ r.key }}" {{ 'checked' if r.key in u.roles }}> {{ r.name }}</label>{% endfor %}
+        </div>
+        <button type="submit">Save roles</button>
+      </form>
+    </td>
+    <td>
+      <form method="post" action="/people/{{ u.id }}/status">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <select name="status">{% for s in statuses %}<option {{ 'selected' if s == u.status }}>{{ s }}</option>{% endfor %}</select>
+        <button type="submit">Set</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>Add a person</h2>
+<form method="post" action="/people/new" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row">
+    <div><label for="n-name">Name</label><input id="n-name" type="text" name="name" required></div>
+    <div><label for="n-email">Email</label><input id="n-email" type="email" name="email" required></div>
+  </div>
+  <div class="checks"><span class="hint">Roles:</span><br>
+    {% for r in roles %}<label><input type="checkbox" name="roles" value="{{ r.key }}"> {{ r.name }}</label>{% endfor %}
+  </div>
+  <p class="hint">They can sign in right away in this local portal. Sending invitations by email comes with hosting.</p>
+  <button class="primary" type="submit">Add person</button>
+</form>
+{% endblock %}

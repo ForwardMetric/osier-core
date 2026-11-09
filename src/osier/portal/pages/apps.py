@@ -8,7 +8,6 @@ confirms, and the tool list is pinned so later changes need another review.
 
 from __future__ import annotations
 
-import secrets
 from typing import Any
 
 from starlette.responses import Response
@@ -16,8 +15,6 @@ from starlette.responses import Response
 from ...connectors.mcp_service import TOOL_POLICIES
 from ...errors import NotFoundError, RecordValidationError
 from ..core import Ctx, NavItem
-
-MAX_PENDING = 5
 
 
 def kind_of(connector_type: str) -> str:
@@ -115,11 +112,7 @@ def register(portal: Any) -> None:
             service = _require(c, engine)
             inspected = service.inspect_mcp_server(transport, secrets_in)
             roles = _roles(engine)
-        assert c.session is not None
-        while len(c.session.pending) >= MAX_PENDING:  # keep a few reviews open at most
-            c.session.pending.pop(next(iter(c.session.pending)))
-        token = secrets.token_urlsafe(16)
-        c.session.pending[token] = {
+        pending = {
             "name": f.get("name"),
             "description": f.get("description"),
             "transport": transport,
@@ -128,7 +121,7 @@ def register(portal: Any) -> None:
             "tools_hash": inspected["tools_hash"],
             **_visibility(c),
         }
-        pending = c.session.pending[token]
+        token = c.hold(pending)
         return c.render(
             "apps_review.html", token=token, pending=pending, roles=roles, policies=TOOL_POLICIES
         )
@@ -136,8 +129,8 @@ def register(portal: Any) -> None:
     @portal.page("/apps/new/mcp/register", methods=("POST",))
     def register_mcp(c: Ctx) -> Response:
         f = c.form
-        assert f is not None and c.session is not None
-        pending = c.session.pending.get(f.get("token"))
+        assert f is not None
+        pending = c.held(f.get("token"))
         if pending is None:
             raise RecordValidationError(
                 "That review expired.",
@@ -160,7 +153,7 @@ def register(portal: Any) -> None:
                 visibility=pending["visibility"],
                 visible_roles=pending["visible_roles"],
             )
-        c.session.pending.pop(f.get("token"), None)
+        c.release(f.get("token"))
         return c.redirect("/apps", f"Connected {result['name']}. Its tools are pinned as reviewed.")
 
     @portal.page("/apps/{name}")

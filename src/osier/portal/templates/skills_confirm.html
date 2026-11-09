@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "_forms.html" import visibility_fields %}
+{% block title %}Preview skill · osier{% endblock %}
+{% block content %}
+<h1>{{ 'Update' if shown.action == 'update' else 'Add' }} {{ shown.name }}?</h1>
+<p class="muted">Agents will read this text as instructions. Read all of it before saving.</p>
+<div class="card">
+  <p>{{ shown.description }}</p>
+  <p class="small muted">Licence: {{ shown.license or 'not stated' }}{% if held.origin %} · From: {{ held.origin }}{% endif %}{% if shown.current_version %} · Replaces version {{ shown.current_version }}{% endif %}</p>
+  {% if held.skipped %}<div class="flash err">Not imported (not supported yet): {{ held.skipped | join(', ') }}</div>{% endif %}
+  <pre>{{ shown.instructions }}</pre>
+</div>
+<form method="post" action="/skills/save" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="token" value="{{ token }}">
+  {{ visibility_fields(roles) }}
+  <div class="actions"><button class="primary" type="submit">Save skill</button> <a href="/skills">Cancel</a></div>
+</form>
+{% endblock %}

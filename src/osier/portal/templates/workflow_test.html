@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Try-out · osier{% endblock %}
+{% block content %}
+<p class="small"><a href="/workflows/{{ name | urlencode }}">{{ name }}</a> /</p>
+<h1>Try-out of {{ name }}</h1>
+<div class="flash ok">{{ result.note }}</div>
+<div class="card">
+  <p><span class="badge {{ 'ok' if result.status == 'succeeded' else 'err' }}">{{ result.status }}</span></p>
+  {% if result.error %}<div class="flash err">Step {{ result.error.step }}: {{ result.error.message }}</div>{% endif %}
+  {% if result.output %}<p class="small"><strong>Output:</strong></p><pre class="small">{{ result.output | tojson(indent=2) }}</pre>{% endif %}
+  <p class="small"><strong>Steps:</strong> {% for t in result.trace %}{{ t.step }}{% if t.simulated %} (simulated){% endif %}{% if not loop.last %} → {% endif %}{% endfor %}</p>
+</div>
+<details class="card"><summary>Step results</summary><pre class="small">{{ steps }}</pre></details>
+{% endblock %}

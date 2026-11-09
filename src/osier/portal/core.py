@@ -144,6 +144,26 @@ class Ctx:
                 )
         return self._who
 
+    MAX_HELD = 5
+
+    def hold(self, value: dict[str, Any]) -> str:
+        """Keep a value (such as a typed secret or a fetched skill) in server memory until
+        the person confirms, and return a token for it. A few at most stay open."""
+        assert self.session is not None
+        while len(self.session.pending) >= self.MAX_HELD:
+            self.session.pending.pop(next(iter(self.session.pending)))
+        token = secrets.token_urlsafe(16)
+        self.session.pending[token] = value
+        return token
+
+    def held(self, token: str) -> dict[str, Any] | None:
+        assert self.session is not None
+        return self.session.pending.get(token)
+
+    def release(self, token: str) -> None:
+        assert self.session is not None
+        self.session.pending.pop(token, None)
+
     def flash(self, message: str, kind: str = "ok") -> None:
         if self.session is not None:
             self.session.flash.append((kind, message))

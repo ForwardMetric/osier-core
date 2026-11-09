@@ -124,3 +124,9 @@ uv run ruff check . && uv run ruff format --check .
     with an MIT-compatible license does the job (queues, LLM access, expression
     evaluation, ...), use it behind a small interface instead of building from scratch.
     Record the choice, its license, and its costs in ARCHITECTURE.md.
+21. **The portal is a thin layer with no scripts.** Pages call engine services as the
+    signed-in person (`ctx.engine()`); never add permission logic that exists only in the
+    portal (guards on top of the engine are fine). Every POST needs the CSRF token; never
+    render, redirect, or log a secret; no inline scripts or styles (the CSP forbids them);
+    keep typed secrets in server memory (`ctx.hold`) between steps, never in a page. Check
+    changes in a real browser as well as with the test client: some bugs only show there.

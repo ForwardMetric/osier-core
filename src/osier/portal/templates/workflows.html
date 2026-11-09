@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Workflows · osier{% endblock %}
+{% block content %}
+<h1>Workflows</h1>
+<p class="muted">Saved processes: record steps, conditions, AI steps, connected apps, and approvals. They are usually written by asking Claude; this is where you see and run them.</p>
+{% if workflows %}
+<div class="card"><table>
+  <thead><tr><th>Workflow</th><th>Steps</th><th>Starts</th><th>Status</th></tr></thead>
+  <tbody>{% for w in workflows %}
+  <tr><td><a href="/workflows/{{ w.name | urlencode }}"><strong>{{ w.name }}</strong></a><br><span class="muted small">{{ w.description }}</span></td>
+    <td class="small">{{ w.steps | length }}</td>
+    <td class="small">{% if w.triggers %}{{ w.triggers | length }} trigger(s){% else %}by hand{% endif %}</td>
+    <td>{% if w.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge todo">{{ w.status }}</span>{% endif %}</td></tr>
+  {% endfor %}</tbody>
+</table></div>
+{% else %}
+<div class="card muted">No workflows yet. Ask Claude to build one, for example: "when I give you a lead, ask me to approve it and then mark it qualified".</div>
+{% endif %}
+<h2>Recent runs</h2>
+{% if runs %}
+<div class="card"><table><thead><tr><th>Workflow</th><th>Status</th><th>Started</th></tr></thead><tbody>
+{% for r in runs %}<tr><td><a href="/workflows/runs/{{ r.run_id }}">{{ r.workflow }}</a></td>
+  <td><span class="badge {{ 'ok' if r.status == 'succeeded' else ('err' if r.status in ('failed', 'rejected', 'cancelled') else 'todo') }}">{{ r.status }}</span></td>
+  <td class="small">{{ r.started_at }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<div class="card muted">Nothing has run yet.</div>{% endif %}
+{% endblock %}

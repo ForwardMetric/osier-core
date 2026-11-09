@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_forms.html" import visibility_fields %}
+{% block title %}{{ skill.name }} · osier{% endblock %}
+{% block content %}
+<p class="small"><a href="/skills">Skills</a> /</p>
+<h1>{{ skill.name }}</h1>
+<div class="card">
+  <p>{{ skill.description }}</p>
+  <p class="small muted">Version {{ skill.version }} · {% if skill.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge todo">{{ skill.status }}</span>{% endif %}
+   · Shared with {{ skill.visibility }}{% if skill.visible_roles %} ({{ skill.visible_roles | join(', ') }}){% endif %}{% if skill.license %} · Licence {{ skill.license }}{% endif %}</p>
+  <pre>{{ skill.instructions }}</pre>
+</div>
+<h2>Status</h2>
+<form method="post" action="/skills/{{ skill.name | urlencode }}/status" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="actions">
+    {% if skill.status != 'active' %}<button type="submit" name="status" value="active">Enable</button>{% endif %}
+    {% if skill.status == 'active' %}<button type="submit" name="status" value="disabled">Disable</button>{% endif %}
+    <button class="danger" type="submit" name="status" value="retired">Retire</button>
+  </div>
+  <p class="hint">Disabled skills are hidden from agents. Retired skills are hidden everywhere; history is kept.</p>
+</form>
+<h2>Sharing</h2>
+<form method="post" action="/skills/{{ skill.name | urlencode }}/share" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {{ visibility_fields(roles, skill.visibility) }}
+  <button class="primary" type="submit">Save sharing</button>
+</form>
+<h2>Versions</h2>
+<div class="card"><table><thead><tr><th>Version</th><th>Change</th><th>By</th><th>When</th></tr></thead><tbody>
+{% for v in versions %}<tr><td>{{ v.version }}</td><td>{{ v.change }}</td><td class="small">{{ v.changed_by_type }}</td><td class="small">{{ v.changed_at }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

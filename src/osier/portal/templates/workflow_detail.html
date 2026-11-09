@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ workflow.name }} · osier{% endblock %}
+{% block content %}
+<p class="small"><a href="/workflows">Workflows</a> /</p>
+<h1>{{ workflow.name }}</h1>
+<div class="card">
+  <p>{{ workflow.description }}</p>
+  <p class="small muted">Version {{ workflow.version }} · {% if workflow.status == 'active' %}<span class="badge ok">Active</span>{% else %}<span class="badge todo">{{ workflow.status }}</span>{% endif %}</p>
+  <ol class="small">{% for s in workflow.steps %}<li><strong>{{ s.id }}</strong> <span class="muted">({{ s.type }})</span></li>{% endfor %}</ol>
+</div>
+
+<h2>Run or try it</h2>
+<form method="post" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% for name, spec in workflow.inputs.items() %}
+  <label for="in_{{ name }}">{{ name }} <span class="hint">{{ spec.description }}{% if spec.type in ('object', 'array') %} (JSON){% endif %}</span></label>
+  <input id="in_{{ name }}" type="text" name="in_{{ name }}" {{ 'required' if spec.required else '' }}>
+  {% endfor %}
+  {% if not workflow.inputs %}<p class="muted small">This workflow takes no inputs.</p>{% endif %}
+  <div class="checks"><label><input type="checkbox" name="approve" value="reject"> When trying: simulate rejecting approvals</label></div>
+  <div class="actions">
+    <button class="primary" type="submit" formaction="/workflows/{{ workflow.name | urlencode }}/start">Run for real</button>
+    <button type="submit" formaction="/workflows/{{ workflow.name | urlencode }}/test">Try it (nothing is kept or sent)</button>
+  </div>
+</form>
+
+<h2>Recent runs</h2>
+{% if runs %}<div class="card"><table><tbody>
+{% for r in runs %}<tr><td><a href="/workflows/runs/{{ r.run_id }}">{{ r.started_at }}</a></td><td><span class="badge {{ 'ok' if r.status == 'succeeded' else ('err' if r.status in ('failed', 'rejected', 'cancelled') else 'todo') }}">{{ r.status }}</span></td></tr>{% endfor %}
+</tbody></table></div>{% else %}<div class="card muted">No runs yet.</div>{% endif %}
+
+{% if can_manage %}
+<h2>Status</h2>
+<form method="post" action="/workflows/{{ workflow.name | urlencode }}/status" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="actions">
+    {% if workflow.status != 'active' %}<button type="submit" name="status" value="active">Enable</button>{% else %}<button type="submit" name="status" value="disabled">Disable</button>{% endif %}
+    <button class="danger" type="submit" name="status" value="retired">Retire</button>
+  </div>
+  <p class="hint">Disabled workflows do not start, and their triggers and schedules stop.</p>
+</form>
+{% endif %}
+
+<details class="card"><summary>Definition (version {{ workflow.version }})</summary><pre class="small">{{ definition }}</pre></details>
+<details class="card"><summary>Versions</summary><table><tbody>
+{% for v in versions %}<tr><td>{{ v.version }}</td><td>{{ v.change }}</td><td class="small">{{ v.changed_at }}</td></tr>{% endfor %}
+</tbody></table></details>
+{% endblock %}

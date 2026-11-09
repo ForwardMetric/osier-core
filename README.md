@@ -261,6 +261,30 @@ instructions, optional skill text, the data you pass it, and only the record too
 objects you list; it must return the fields you declare. AI steps run in the worker and
 count against each connection's monthly token and dollar limits (`osier ai status`).
 
+## The web portal
+
+Instead of the terminal, administrators can configure everything in a browser. Start it:
+
+```bash
+uv run osier portal
+```
+
+It prints a one-time sign-in link; open it and choose who to sign in as (this is the
+local development sign-in). Pages:
+
+- **AI models:** connect OpenAI, OpenRouter, or a compatible server. Keys are stored
+  encrypted and never shown again. Create model profiles and set limits.
+- **Connected apps:** add MCP servers (you review their tools first), email (SMTP), and
+  choose what agents may do with each tool and who can use each app.
+- **Approvals:** approve or reject what agents propose: schema changes, emails and app
+  actions, and workflow approvals.
+- **Workflows, Skills, People:** see and run workflows (or try them with nothing kept),
+  add skills (you read the full text first), add people and assign roles.
+
+Run `uv run osier worker` alongside it so triggered workflows and background jobs run.
+What you configure here is what Claude can use through the MCP server. Hosting it for
+claude.ai (HTTPS sign-in and per-user authorization) is not built yet.
+
 ## MCP tools
 
 | Tool | What it does |
@@ -301,6 +325,8 @@ count against each connection's monthly token and dollar limits (`osier ai statu
   steps, conditions, and approvals that pause the run; checkpoints in the tenant's
   schema; record and schedule triggers; a job queue per organization on Procrastinate
   with configurable concurrency and retries; `osier worker`; `osier workflows` and `osier jobs` commands.
+- **Web portal:** a local browser UI for AI models, connected apps, approvals, workflows,
+  skills, and people (`osier portal`).
 - **MCP server and CLI** for local use with Claude Desktop and Claude Code.
 
 Not yet (see the roadmap in ARCHITECTURE.md): hosting osier itself (HTTPS, everyone
