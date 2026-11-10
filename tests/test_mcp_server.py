@@ -430,17 +430,24 @@ SKILL = {
 }
 
 
+def own_skills(server):
+    """Skills other than the starter skills every tenant gets."""
+    from osier.starter_skills import STARTER_SKILLS
+
+    starters = {name for name, *_ in STARTER_SKILLS}
+    return [s["name"] for s in call(server, "list_skills")["skills"] if s["name"] not in starters]
+
+
 def test_skill_saved_in_chat_after_confirmation(server):
-    assert call(server, "list_skills") == {"skills": [], "count": 0}
+    assert own_skills(server) == []
     declined = call(server, "save_skill", _answer="decline", **SKILL)
     assert "decline" in json.dumps(declined)  # the MCP SDK reports the decline
-    assert call(server, "list_skills")["count"] == 0
+    assert own_skills(server) == []
 
     saved = call(server, "save_skill", _answer="accept", **SKILL)
     assert saved["confirmed_by_user"] and saved["version"] == 1
     assert "Qualify a lead" in prompts[0] and "Create skill" in prompts[0]
-    listed = call(server, "list_skills")["skills"]
-    assert [s["name"] for s in listed] == ["qualify-lead"]
+    assert own_skills(server) == ["qualify-lead"]
     assert "Check company size" in call(server, "get_skill", name="qualify-lead")["instructions"]
 
     again = call(server, "save_skill", _answer="accept", **{**SKILL, "instructions": "v2 text"})
@@ -450,7 +457,7 @@ def test_skill_saved_in_chat_after_confirmation(server):
 def test_skill_without_prompt_is_not_saved(server):
     result = call(server, "save_skill", **SKILL)
     assert result["error"]["code"] == "CONFIRMATION_UNAVAILABLE"
-    assert call(server, "list_skills")["count"] == 0
+    assert own_skills(server) == []
 
 
 def test_skill_settings_change_in_chat(server):
@@ -466,7 +473,7 @@ def test_member_can_use_but_not_create_skills(server, config, conn, make_user):
     call(server, "save_skill", _answer="accept", **SKILL)
     member = make_user("rep@example.com", "member")
     member_server = build_server(config, sessions=Sessions(config, conn, member.user_id))
-    assert call(member_server, "list_skills")["count"] == 1
+    assert own_skills(member_server) == ["qualify-lead"]
     assert call(member_server, "get_skill", name="qualify-lead")["name"] == "qualify-lead"
     refused = call(
         member_server, "save_skill", _answer="accept", **{**SKILL, "name": "other-skill"}

@@ -150,6 +150,16 @@ give osier its address:
 uv run osier dev oauth-redirect https://<your-tunnel-host>
 ```
 
+### The /osier menu
+
+Every tenant starts with eight starter skills (add leads, follow up with a lead,
+review the pipeline, log an activity, automate something, connect an app, design
+your own objects, what is waiting). In a client that shows MCP prompts, type
+`/osier` (Claude Code lists it as `/mcp__osier__osier`) to see the menu. In any
+client, say "osier menu": the `osier_menu` tool returns the options. Starter
+skills are ordinary skills: edit, share, or retire them. Prompt display in Claude
+Desktop is not verified yet.
+
 ### Skills
 
 Skills are instructions for recurring work, in the Agent Skills `SKILL.md`

@@ -97,11 +97,14 @@ class DevConfig:
         """Bring this tenant up to the installed osier version: engine tables, system
         packages, and additive package upgrades. Cheap when already current."""
         from .packages import PackageService
+        from .starter_skills import install_starter_skills
         from .tenant import upgrade_engine_tables
 
         with self.connect() as conn:
             upgrade_engine_tables(conn, self.tenant)
-            PackageService(self.session(Principal.system("upgrade"), conn)).ensure_current()
+            system = self.session(Principal.system("upgrade"), conn)
+            PackageService(system).ensure_current()
+            install_starter_skills(system)
 
     def connectors(self, principal: Principal, conn: psycopg.Connection | None = None) -> Any:
         from .connectors import ConnectorService

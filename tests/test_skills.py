@@ -2,7 +2,7 @@
 
 import httpx2
 import pytest
-from conftest import agent_for
+from conftest import agent_for, own_skills
 
 from osier.authz import PermissionDenied
 from osier.errors import ApprovalError, NotFoundError, RecordValidationError
@@ -60,7 +60,7 @@ def test_create_get_list_and_versions(crm):
     updated = QUALIFY.replace("10 or more", "11 or more")
     assert crm.skills.save(updated)["version"] == 2
     assert [v["change"] for v in crm.skills.versions("qualify-lead")] == ["created", "updated"]
-    assert [s["name"] for s in crm.skills.list()] == ["qualify-lead"]
+    assert [s["name"] for s in own_skills(crm)] == ["qualify-lead"]
 
 
 def test_build_from_fields():
@@ -93,12 +93,12 @@ def test_visibility(crm, make_user):
     crm.skills.save(QUALIFY, visibility="roles", visible_roles=["sales_rep"])
     rep = crm.as_principal(make_user("rae@acme.test", "member", "sales_rep"))
     other = crm.as_principal(make_user("ola@acme.test", "member"))
-    assert [s["name"] for s in rep.skills.list()] == ["qualify-lead"]
-    assert other.skills.list() == []
+    assert [s["name"] for s in own_skills(rep)] == ["qualify-lead"]
+    assert own_skills(other) == []
     with pytest.raises(NotFoundError):
         other.skills.get("qualify-lead")
     crm.skills.share("qualify-lead", "organization")
-    assert [s["name"] for s in other.skills.list()] == ["qualify-lead"]
+    assert [s["name"] for s in own_skills(other)] == ["qualify-lead"]
     with pytest.raises(RecordValidationError):
         crm.skills.share("qualify-lead", "roles", ["nope"])
 
@@ -107,10 +107,10 @@ def test_disable_and_retire(crm, make_user):
     crm.skills.save(QUALIFY)
     sam = crm.as_principal(make_user("sam@acme.test", "member"))
     crm.skills.set_status("qualify-lead", "disabled")
-    assert sam.skills.list() == []
+    assert own_skills(sam) == []
     crm.skills.set_status("qualify-lead", "active")
     crm.skills.set_status("qualify-lead", "retired")
-    assert crm.skills.list() == []
+    assert own_skills(crm) == []
     restored = crm.skills.save(QUALIFY)  # saving again restores it as a new version
     assert restored["version"] == 2 and restored["status"] == "active"
 

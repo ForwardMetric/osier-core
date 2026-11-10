@@ -2,6 +2,7 @@
 
 import re
 
+from conftest import own_skills
 from portal_helpers import post, sign_in
 
 SKILL = """---
@@ -30,10 +31,10 @@ def test_a_skill_is_previewed_in_full_before_it_is_saved(admin_client, crm):
     page = post(admin_client, "/skills/new", skill_md=SKILL)
     assert page.status_code == 200
     assert "Check company size" in page.text and "Licence: MIT" in page.text
-    assert crm.skills.list() == []  # nothing saved by previewing
+    assert own_skills(crm) == []  # nothing saved by previewing
     done = post(admin_client, "/skills/save", token=token_of(page.text), visibility="organization")
     assert done.status_code == 303
-    assert [s["name"] for s in crm.skills.list()] == ["qualify-lead"]
+    assert [s["name"] for s in own_skills(crm)] == ["qualify-lead"]
     detail = admin_client.get("/skills/qualify-lead")
     assert detail.status_code == 200 and "Check company size" in detail.text
     assert "qualify-lead" in admin_client.get("/skills").text
@@ -42,7 +43,7 @@ def test_a_skill_is_previewed_in_full_before_it_is_saved(admin_client, crm):
 def test_an_expired_preview_saves_nothing(admin_client, crm):
     response = post(admin_client, "/skills/save", token="nope")
     assert response.status_code == 404 and "expired" in response.text
-    assert crm.skills.list() == []
+    assert own_skills(crm) == []
 
 
 def test_an_invalid_skill_is_explained(admin_client):
@@ -60,7 +61,7 @@ def test_updating_creates_a_new_version(admin_client, crm):
     for text in (SKILL, SKILL.replace("set the status", "set the status and owner")):
         page = post(admin_client, "/skills/new", skill_md=text)
         post(admin_client, "/skills/save", token=token_of(page.text))
-    assert crm.skills.list()[0]["version"] == 2
+    assert own_skills(crm)[0]["version"] == 2
     assert "Replaces version 2" in post(admin_client, "/skills/new", skill_md=SKILL).text
 
 
@@ -68,16 +69,16 @@ def test_status_and_sharing(admin_client, crm):
     page = post(admin_client, "/skills/new", skill_md=SKILL)
     post(admin_client, "/skills/save", token=token_of(page.text))
     assert post(admin_client, "/skills/qualify-lead/status", status="disabled").status_code == 303
-    assert crm.skills.list()[0]["status"] == "disabled"
+    assert own_skills(crm)[0]["status"] == "disabled"
     assert (
         post(
             admin_client, "/skills/qualify-lead/share", visibility="roles", visible_roles="member"
         ).status_code
         == 303
     )
-    assert crm.skills.list()[0]["visible_roles"] == ["member"]
+    assert own_skills(crm)[0]["visible_roles"] == ["member"]
     assert post(admin_client, "/skills/qualify-lead/status", status="retired").status_code == 303
-    assert crm.skills.list() == []
+    assert own_skills(crm) == []
 
 
 def test_import_from_a_link_previews_with_the_licence(admin_client, monkeypatch):

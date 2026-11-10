@@ -33,6 +33,7 @@ uv run ruff check . && uv run ruff format --check .
   `mcp_remote.py`), OAuth sign-in (`oauth.py`, `oauth_service.py`, `oauth_callback.py`)
 - `src/osier/skills.py` — text skills (Agent Skills `SKILL.md`): parse, import, versions,
   visibility (`SkillService`, via `session.skills`)
+- `src/osier/starter_skills.py` — skills every tenant gets; menu for `/osier`
 - `src/osier/workflows/` — workflows: `spec.py` (declarative definition, references,
   validation), `service.py` (`WorkflowService`: versions, runs, approvals; compiles to a
   LangGraph graph), `checkpoint.py` (LangGraph checkpointer on `TenantConnection`),

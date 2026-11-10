@@ -176,3 +176,11 @@ def client(made):
 def admin_client(client, boot):
     sign_in(client, boot.admin_user_id)
     return client
+
+
+def own_skills(session) -> list[dict]:
+    """The skills a session sees, without the starter skills every tenant gets."""
+    from osier.starter_skills import STARTER_SKILLS
+
+    starters = {name for name, *_ in STARTER_SKILLS}
+    return [s for s in session.skills.list() if s["name"] not in starters]

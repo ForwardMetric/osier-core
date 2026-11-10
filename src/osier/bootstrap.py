@@ -10,6 +10,7 @@ import psycopg
 from .context import Principal, Tenant
 from .packages import PackageService, system_package_names
 from .session import Session
+from .starter_skills import install_starter_skills
 from .tenant import provision_tenant
 
 
@@ -61,6 +62,7 @@ def bootstrap_tenant(
         {"app_user": admin["id"], "role": admin_role["id"]},
         idempotency_key="bootstrap:admin-role",
     )
+    install_starter_skills(system)
     return Bootstrap(
         tenant=tenant,
         organization_id=uuid.UUID(org["id"]),

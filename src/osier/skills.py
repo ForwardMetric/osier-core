@@ -291,6 +291,14 @@ class SkillService:
                 )
             ).fetchall()
 
+    def exists(self, name: str) -> bool:
+        """Whether a skill with this name was ever added, even if retired or hidden from
+        this person. Used to install starter skills only once."""
+        row = self._conn.execute(
+            sql.SQL("SELECT 1 FROM {} WHERE name = %s").format(self._t("meta_skills")), (name,)
+        ).fetchone()
+        return row is not None
+
     def _row(self, name: str) -> dict[str, Any]:
         with self._conn.cursor(row_factory=dict_row) as cur:
             row = cur.execute(

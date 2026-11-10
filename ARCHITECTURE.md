@@ -939,6 +939,13 @@ backfills).
 
 ### 12.5 Skills (built: text only)
 
+**Starter skills** (`starter_skills.py`) are installed for every tenant at bootstrap
+and by `ensure_current`, as the system principal, with source `{"type": "starter"}`.
+A starter skill is added only if no skill of that name has ever existed, so edits and
+retirements are never undone and an upgrade never overwrites a tenant's text. Each is
+also an MCP prompt (`osier` is the menu), and `osier_menu` returns them followed by
+the person's other visible skills. Skill text may name only real tools (tested).
+
 A **skill** is reusable instructions for recurring work, in the open Agent
 Skills format (`SKILL.md` with `name` and `description` frontmatter; optional
 `license`, `compatibility`, `metadata`, `allowed-tools`), so published skills,
