@@ -284,8 +284,12 @@ local development sign-in). Pages:
 
 - **AI models:** connect OpenAI, OpenRouter, or a compatible server. Keys are stored
   encrypted and never shown again. Create model profiles and set limits.
-- **Connected apps:** add MCP servers (you review their tools first), email (SMTP), and
-  choose what agents may do with each tool and who can use each app.
+- **Apps:** a gallery with one tile per kind of app. Gmail and SendGrid need only an
+  address and a key (server settings are filled in); Notion and Zapier sign in through
+  their own site (OAuth) and you review the tools before anything is connected; "Custom
+  app" takes any MCP server. Choose what agents may do with each tool and who can use
+  each app. OAuth tiles return to the portal's `/oauth/callback`; some providers accept
+  only https return addresses, so test them on a hosted portal.
 - **Approvals:** approve or reject what agents propose: schema changes, emails and app
   actions, and workflow approvals.
 - **Workflows, Skills, People:** see and run workflows (or try them with nothing kept),

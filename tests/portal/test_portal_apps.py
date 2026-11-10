@@ -76,7 +76,7 @@ def test_members_cannot_open_the_apps_pages(client, make_user):
 def test_development_outbox(admin_client):
     response = post(admin_client, "/apps/new/outbox", name="Outbox", approval="not_required")
     assert response.status_code == 303
-    page = admin_client.get("/apps").text
+    page = admin_client.get("/apps?tab=connected").text
     assert "Outbox" in page and "Email (development outbox)" in page and "Added Outbox" in page
 
 
@@ -99,7 +99,7 @@ def smtp_form(**overrides):
 def test_smtp_password_is_never_shown_and_is_encrypted(admin_client, conn, config):
     response = post(admin_client, "/apps/new/email", **smtp_form())
     assert response.status_code == 303
-    page = admin_client.get("/apps")
+    page = admin_client.get("/apps?tab=connected")
     assert "Sales email" in page.text and "Email (SMTP)" in page.text
     assert PASSWORD not in page.text and PASSWORD not in response.text
     detail = admin_client.get("/apps/Sales%20email")
@@ -116,7 +116,7 @@ def test_a_wrong_smtp_password_is_rejected_without_echoing_it(admin_client):
     response = post(admin_client, "/apps/new/email", **smtp_form(password="wrong-password-xyz"))
     assert response.status_code == 400
     assert "wrong-password-xyz" not in response.text
-    assert "Nothing connected yet" in admin_client.get("/apps").text
+    assert "Nothing connected yet" in admin_client.get("/apps?tab=connected").text
 
 
 def test_the_mcp_flow_shows_tools_first_and_pins_what_was_reviewed(admin_client):
@@ -124,7 +124,7 @@ def test_the_mcp_flow_shows_tools_first_and_pins_what_was_reviewed(admin_client)
     assert page.status_code == 200
     assert "search_notes" in page.text and "create_note" in page.text and "read-only" in page.text
     assert TOKEN not in page.text  # the typed token waits in server memory, not in the page
-    assert "Notes" not in admin_client.get("/apps").text.split("Add an app")[0].split("<tbody>")[-1]
+    assert "Nothing connected yet" in admin_client.get("/apps?tab=connected").text
     done = post(
         admin_client,
         "/apps/new/mcp/register",
@@ -133,7 +133,7 @@ def test_the_mcp_flow_shows_tools_first_and_pins_what_was_reviewed(admin_client)
         policy_1="blocked",
     )
     assert done.status_code == 303
-    listed = admin_client.get("/apps").text
+    listed = admin_client.get("/apps?tab=connected").text
     assert "Connected Notes" in listed and "MCP server" in listed
     detail = admin_client.get("/apps/Notes").text
     assert "search_notes" in detail and "create_note" in detail  # blocked tools stay visible
@@ -163,7 +163,7 @@ def test_policies_can_be_changed_and_a_blocked_tool_unblocked(admin_client):
 def test_a_review_that_expired_connects_nothing(admin_client):
     response = post(admin_client, "/apps/new/mcp/register", token="not-a-real-token")
     assert response.status_code == 400 and "expired" in response.text
-    assert "Notes" not in admin_client.get("/apps").text.split("Add an app")[0]
+    assert "Nothing connected yet" in admin_client.get("/apps?tab=connected").text
 
 
 def test_only_a_few_reviews_stay_open(admin_client):
@@ -207,7 +207,7 @@ def test_sharing_with_roles_does_not_lock_the_admin_out(admin_client):
     )
     assert response.status_code == 303
     # the admin is not in the "member" role, but can still see and manage the app
-    listed = admin_client.get("/apps").text
+    listed = admin_client.get("/apps?tab=connected").text
     assert "Notes" in listed and "roles: member" in " ".join(listed.split())
     assert admin_client.get("/apps/Notes").status_code == 200
     assert post(admin_client, "/apps/Notes/visibility", visibility="roles").status_code == 400
@@ -219,7 +219,7 @@ def test_removing_an_app(admin_client):
     assert confirm.status_code == 200 and "Remove Outbox?" in confirm.text
     assert admin_client.get("/apps/Nope/remove").status_code == 404
     assert post(admin_client, "/apps/Outbox/remove").status_code == 303
-    assert "Nothing connected yet" in admin_client.get("/apps").text
+    assert "Nothing connected yet" in admin_client.get("/apps?tab=connected").text
     assert admin_client.get("/apps/Outbox").status_code == 404
 
 

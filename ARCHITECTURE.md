@@ -1276,8 +1276,9 @@ counters (when rate limiting is built), automatic routing rules.
 
 Administrators configure osier in a browser instead of the CLI: `osier portal` serves
 `http://127.0.0.1:8000`. Pages: **AI models** (connections, keys, profiles, limits,
-usage), **Connected apps** (MCP servers with tool review, SMTP, development outbox,
-sharing, removal), **Approvals** (schema changes, agent actions, workflow approvals),
+usage), **Apps** (a tile gallery, `portal/catalog.py`: email presets that only ask for an address
+and key, OAuth sign-in for hosted MCP apps with `/oauth/callback`, custom MCP servers with
+tool review, SMTP, development outbox, sharing, removal), **Approvals** (schema changes, agent actions, workflow approvals),
 **Workflows** (definitions, runs, run or try with sample inputs), **Skills** (preview
 before saving, URL import), **People** (add people, roles, status). Once configured, the
 same tools are available to Claude through the MCP server.
@@ -1316,6 +1317,8 @@ same tools are available to Claude through the MCP server.
   `describe_mcp_server`, and `list_connections(manage=True)` (a manager who restricted
   an app away from themselves could no longer see it).
 - **Known limitations / data gaps:**
+  - Gallery presets (Gmail, SendGrid) and the Notion and Zapier OAuth tiles use publicly
+    documented settings but have not been tried against the live providers.
   - Sessions are in memory: they do not survive a restart or span several processes.
     Hosting needs a shared session store.
   - **Retired records still occupy unique values** (both the application check and the

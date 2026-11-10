@@ -128,6 +128,7 @@ class Ctx:
             self.config.broker(),
             allow_private_network=self.config.allow_private_network,
             allow_local_processes=self.config.allow_local_processes,
+            **self.portal.connector_options,
         )
 
     def who(self) -> Who:
@@ -224,8 +225,13 @@ class Portal:
         port: int = 8000,
         secure: bool = False,
         store: SessionStore | None = None,
+        public_url: str | None = None,
+        connector_options: dict[str, Any] | None = None,
     ) -> None:
         self.config = config
+        self.connector_options = connector_options or {}  # tests inject fake providers
+        scheme = "https" if secure else "http"
+        self.public_url = (public_url or f"{scheme}://{host}:{port}").rstrip("/")
         self.launch_key = launch_key or secrets.token_urlsafe(32)
         self.host, self.port, self.secure = host, port, secure
         self.store = store or SessionStore()
@@ -239,6 +245,11 @@ class Portal:
     @property
     def login_url(self) -> str:
         return f"http://{self.host}:{self.port}/login?key={self.launch_key}"
+
+    def system_session(self, conn: Any) -> Any:
+        """A system-principal session, for sign-in callbacks that arrive without a person
+        (the one-time ``state`` value identifies the request)."""
+        return Session(conn, self.config.tenant, Principal.system("oauth-callback"))
 
     def visible_nav(self, permissions: set[str]) -> list[NavItem]:
         return [n for n in self.nav if not n.any_of or permissions & set(n.any_of)]
@@ -320,9 +331,20 @@ def create_app(
     port: int = 8000,
     secure: bool = False,
     store: SessionStore | None = None,
+    public_url: str | None = None,
+    connector_options: dict[str, Any] | None = None,
 ) -> tuple[Starlette, Portal]:
     from .pages import register_all
 
-    portal = Portal(config, launch_key=launch_key, host=host, port=port, secure=secure, store=store)
+    portal = Portal(
+        config,
+        launch_key=launch_key,
+        host=host,
+        port=port,
+        secure=secure,
+        store=store,
+        public_url=public_url,
+        connector_options=connector_options,
+    )
     register_all(portal)
     return portal.app(), portal
