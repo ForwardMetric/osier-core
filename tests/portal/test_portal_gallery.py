@@ -183,3 +183,11 @@ def test_only_the_person_who_started_can_finish(oauth, boot, make_user):
     sign_in(other, make_user("dev@acme.test", "admin").user_id)
     refused = other.get(path)
     assert refused.status_code in (400, 403) and "Only the person who started" in refused.text
+
+
+def test_stylesheet_is_versioned_and_revalidated(admin_client):
+    page = admin_client.get("/apps").text
+    href = re.search(r'href="(/static/portal.css\?v=[0-9a-f]{10})"', page).group(1)
+    css = admin_client.get(href)
+    assert css.status_code == 200 and css.headers["cache-control"] == "no-cache"
+    assert admin_client.get("/apps").headers["cache-control"] == "no-store"

@@ -142,6 +142,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # form posts, which the CSRF origin check (rightly) refuses.
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
-        if not request.url.path.startswith("/static/"):
-            response.headers["Cache-Control"] = "no-store"
+        # Pages are never cached. Static files are revalidated (ETag) on every use, so a
+        # browser never keeps showing an old stylesheet after an upgrade.
+        static = request.url.path.startswith("/static/")
+        response.headers["Cache-Control"] = "no-cache" if static else "no-store"
         return response

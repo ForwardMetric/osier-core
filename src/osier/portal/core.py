@@ -8,6 +8,7 @@ hides pages the person cannot use, but that is a convenience, not the protection
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import secrets
@@ -239,6 +240,8 @@ class Portal:
         self.templates = Environment(
             loader=PackageLoader("osier.portal", "templates"), autoescape=True
         )
+        css = __import__("pathlib").Path(__file__).parent / "static" / "portal.css"
+        self.templates.globals["css_version"] = hashlib.sha256(css.read_bytes()).hexdigest()[:10]
         self.routes: list[Route | Mount] = []
         self.nav: list[NavItem] = []
 
